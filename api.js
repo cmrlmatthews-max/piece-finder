@@ -12,11 +12,11 @@ window.PF = window.PF || {};
   const MAX_TOKENS = 2048;
   const TIMEOUT_MS = 120000;   // give up after 2 minutes
 
-  // Note: — is the em dash used in the spec texts (kept as an escape so file encoding never matters).
+  // Note: \u2014 is the em dash used in the spec texts (kept as an escape so file encoding never matters).
   const MODELS = [
-    { id: 'claude-haiku-5-5', label: 'Haiku 5.5 — fast, cheapest' },
-    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 — smarter' },
-    { id: 'claude-opus-5-5', label: 'Opus 5.5 — smartest, costs most' },
+    { id: 'claude-haiku-5-5', label: 'Haiku 5.5 \u2014 fast, cheapest' },
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 \u2014 smarter' },
+    { id: 'claude-opus-5-5', label: 'Opus 5.5 \u2014 smartest, costs most' },
   ];
 
   const SYSTEM = 'You help people solve a 1500-piece jigsaw puzzle. You look at photos of loose pieces ' +
@@ -78,7 +78,7 @@ window.PF = window.PF || {};
       'Task: find which candidate pieces could fit the empty spot. Rank the best ' + topN + ' candidates, best first.',
       "Judge by: (1) colors and patterns that match the picture at the spot and continue the neighbors' patterns,",
       "(2) the shape of the hole: which sides need a tab (knob) and which need a blank (socket), (3) the candidate's",
-      'tab/blank layout — a candidate may be rotated any way. Candidate IDs run 1 to ' + candidateCount + '.',
+      'tab/blank layout \u2014 a candidate may be rotated any way. Candidate IDs run 1 to ' + candidateCount + '.',
       'Return only plausible candidates (fewer than ' + topN + ' is fine). Give each a one-sentence reason a person can check',
       'by eye. Put any general observation in notes (one sentence).',
     ].join('\n');

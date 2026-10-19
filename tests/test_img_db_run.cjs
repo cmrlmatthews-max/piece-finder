@@ -42,6 +42,15 @@ function startServer() {
   });
 }
 
+const TEST_TIMEOUT_MS = 20000;
+
+// Resolves with `fallback` if `promise` has not settled after `ms` milliseconds.
+function withTimeout(promise, ms, fallback) {
+  let timer;
+  const timeout = new Promise(function (resolve) { timer = setTimeout(function () { resolve(fallback); }, ms); });
+  return Promise.race([promise, timeout]).finally(function () { clearTimeout(timer); });
+}
+
 // Runs every test of one page; returns { pass, fail, skip }.
 async function runPage(browser, port, spec) {
   const context = await browser.newContext();
@@ -61,7 +70,8 @@ async function runPage(browser, port, spec) {
   const names = await page.evaluate(function () { return window.__names(); });
   const tally = { pass: 0, fail: 0, skip: 0 };
   for (let i = 0; i < names.length; i++) {
-    const r = await page.evaluate(function (n) { return window.__run(n); }, i);
+    const r = await withTimeout(page.evaluate(function (n) { return window.__run(n); }, i), TEST_TIMEOUT_MS,
+      { name: names[i], ok: false, error: 'timed out after ' + TEST_TIMEOUT_MS + ' ms' });
     if (r.ok && r.note === 'skipped') { tally.skip++; console.log('SKIP  ' + spec.label + ': ' + r.name); }
     else if (r.ok) { tally.pass++; console.log('PASS  ' + spec.label + ': ' + r.name); }
     else { tally.fail++; console.log('FAIL  ' + spec.label + ': ' + r.name + '\n        ' + String(r.error).split('\n').slice(0, 4).join('\n        ')); }

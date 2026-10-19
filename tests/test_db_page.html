@@ -285,9 +285,13 @@
     let blocked = false;
     const v2 = await new Promise(function (res, rej) {
       const r = indexedDB.open('piecefinder', 2);
+      const timer = setTimeout(function () {
+        mine.close(); // let the upgrade finish so later tests are not stuck behind it
+        rej(new Error('the upgrade stayed blocked: our connection did not close on versionchange'));
+      }, 2000);
       r.onblocked = function () { blocked = true; };
-      r.onsuccess = function () { res(r.result); };
-      r.onerror = function () { rej(r.error); };
+      r.onsuccess = function () { clearTimeout(timer); res(r.result); };
+      r.onerror = function () { clearTimeout(timer); rej(r.error); };
     });
     eq(blocked, false, 'upgrade was not blocked by us');
     eq(v2.version, 2, 'raw v2 connection opened');

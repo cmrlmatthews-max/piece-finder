@@ -52,11 +52,15 @@ PF.img = (function () {
   }
 
   // Draws the source rectangle (sx, sy, sw, sh) of `src` over the whole of `dst`, with smoothing.
+  // When the rectangle is the whole source, the short drawImage form is used: it has no source-rect
+  // maths, so an EXIF-rotated <img> cannot be mis-read by any browser.
   function paint(dst, src, sx, sy, sw, sh) {
     const ctx = ctx2d(dst);
+    const size = sizeOf(src);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(src, sx, sy, sw, sh, 0, 0, dst.width, dst.height);
+    if (sx === 0 && sy === 0 && sw === size.w && sh === size.h) ctx.drawImage(src, 0, 0, dst.width, dst.height);
+    else ctx.drawImage(src, sx, sy, sw, sh, 0, 0, dst.width, dst.height);
   }
 
   // Frees a scratch canvas's pixel memory right away (helps iOS Safari stay under its limit).

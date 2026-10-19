@@ -298,6 +298,23 @@
     const t = PF.img.crop(mk(1000, 1000, '#fff'), 100, 100, 640, 320, 320);
     eq(t.width + 'x' + t.height, '320x160', 'piece-thumb style crop');
   });
+  test('crop: a big reduction from an offset region still picks the right pixels', function () {
+    // 1600x800 with four colour quadrants; crop 800x400 starting inside the lower-right quadrant region
+    const c = mk(1600, 800, '#ff0000');
+    const x = c.getContext('2d');
+    x.fillStyle = '#00ff00'; x.fillRect(800, 0, 800, 400);
+    x.fillStyle = '#0000ff'; x.fillRect(0, 400, 800, 400);
+    x.fillStyle = '#ffff00'; x.fillRect(800, 400, 800, 400);
+    const yellow = PF.img.crop(c, 900, 450, 600, 300, 75);    // 8x smaller, entirely inside yellow
+    eq(yellow.width + 'x' + yellow.height, '75x38', 'size');
+    near(px(yellow, 10, 10), [255, 255, 0], 6, 'yellow top-left');
+    near(px(yellow, 65, 30), [255, 255, 0], 6, 'yellow bottom-right');
+    const mix = PF.img.crop(c, 600, 200, 400, 400, 50);       // spans all four quadrants
+    near(px(mix, 10, 10), [255, 0, 0], 8, 'red quadrant');
+    near(px(mix, 40, 10), [0, 255, 0], 8, 'green quadrant');
+    near(px(mix, 10, 40), [0, 0, 255], 8, 'blue quadrant');
+    near(px(mix, 40, 40), [255, 255, 0], 8, 'yellow quadrant');
+  });
   test('crop: degenerate regions give a 1x1 canvas instead of throwing', function () {
     const c = halves();
     [[500, 500, 10, 10], [-30, -30, 10, 10], [10, 10, 0, 0], [NaN, NaN, NaN, NaN], [undefined, undefined, undefined, undefined]].forEach(function (t) {
