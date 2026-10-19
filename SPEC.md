@@ -246,6 +246,9 @@ inside `poster.js` (inject a `<style>` once). Dark theme: background `#111`, tex
 
 ## 8. `index.html` + `app.css` + `app.js` → `PF.app`
 
+> As built: the UI is split into `app.js` (helpers, state, Settings, Poster), `app-pieces.js` (Pieces tab) and
+> `app-find.js` (Find tab + results), loaded in that order after `poster.js`. Everything else below still applies.
+
 Single-page app, dark theme (`#0f1115` background, `#e8eaf0` text, accent `#ffd400`, cards `#1a1d24`, danger `#ff5a5a`),
 system font, big touch targets (min 48 px), iOS safe-area padding (`env(safe-area-inset-*)`), no zoom on inputs
 (font-size >= 16 px). `<head>`: `<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">`,

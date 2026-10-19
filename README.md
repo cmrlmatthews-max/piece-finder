@@ -34,7 +34,9 @@ The repo root holds these files.
 
 - `index.html`: the app page.
 - `app.css`: the app styles.
-- `app.js`: the screens and the search steps.
+- `app.js`: shared helpers, the Settings tab, and the Poster tab.
+- `app-pieces.js`: the Pieces tab (groups, piece detection review, placed marks).
+- `app-find.js`: the Find tab (search and results).
 - `imgutil.js`: loads, resizes, and crops photos.
 - `db.js`: saves groups, pieces, the poster, and settings on the phone.
 - `segment.js`: finds the loose pieces in a group photo.
@@ -43,7 +45,7 @@ The repo root holds these files.
 - `poster.js`: the screen where you pick the spot on the poster.
 - `manifest.webmanifest`: the app name, colors, and icons for the Home Screen.
 - `icons/`: the app icons.
-- `tests/`: test scripts and test photos.
+- `tests/`: test scripts and synthetic test photos. Run all tests with `NODE_PATH=<global node_modules> node tests/e2e_app.mjs` (needs Playwright). The piece-detection test is `tests/test_segment.mjs`.
 - `SPEC.md`: the build spec for the app.
 - `README.md`: this file.
 
@@ -53,31 +55,18 @@ GitHub Pages: a free GitHub service that puts a web page online.
 
 Repository (repo): a project folder stored on GitHub.
 
-Follow these steps to put the app online.
+The files are in the public repo https://github.com/cmrlmatthews-max/piece-finder. Turn on GitHub Pages once.
 
 1. Sign in to GitHub as cmrlmatthews-max.
-2. Open https://github.com/new.
-3. Type piece-finder in the **Repository name** box.
+2. Open https://github.com/cmrlmatthews-max/piece-finder/settings/pages.
+3. Open the **Source** list and select **Deploy from a branch**.
+4. Open the **Branch** list and select **main**.
+5. Open the folder list and select **/ (root)**.
+6. Click **Save**.
+7. Wait one to two minutes.
+8. Open https://cmrlmatthews-max.github.io/piece-finder/.
 
-> **Caution:** GitHub Pages needs a public repository on a free account.
-
-4. Select **Public**.
-5. Click **Create repository**.
-6. Click **uploading an existing file**.
-
-> **Caution:** Upload the files inside the project folder. Do not upload the folder itself.
-
-7. Drag the files and folders inside the project folder into the upload box.
-8. Scroll to the bottom of the page.
-9. Click **Commit changes**.
-10. Click **Settings**.
-11. Click **Pages** in the left menu.
-12. Open the **Source** list and select **Deploy from a branch**.
-13. Open the **Branch** list and select **main**.
-14. Open the folder list and select **/ (root)**.
-15. Click **Save**.
-16. Wait one to two minutes.
-17. Open https://cmrlmatthews-max.github.io/piece-finder/.
+Later changes: push to `main`. GitHub Pages updates the site in about a minute.
 
 ## Get a Claude API key
 
