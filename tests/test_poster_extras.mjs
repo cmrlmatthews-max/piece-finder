@@ -158,8 +158,29 @@ async function testReplaceAndBadInput(env) {
   check(L('no overlay left over, style tag still injected once'), c.n === 0 && c.styles === 1, JSON.stringify(c));
 }
 
+// A pointer that never comes up must not block later taps; a failing crop closes the overlay and rejects.
+async function testRobustness(env) {
+  const { page, L, check } = env;
+  await env.start({});
+  await page.evaluate(() => {
+    const st = document.querySelector('.pf-poster-stage'); const r = st.getBoundingClientRect();
+    st.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 41, pointerType: 'touch', isPrimary: true, clientX: r.left + 40, clientY: r.top + 40 }));
+  });                                         // finger 41 goes down and is never released
+  await page.waitForTimeout(1700);
+  const ex = await env.screenOf(env.TX, env.TY);
+  await env.tap(ex.x, ex.y);
+  check(L('a lost pointer-up does not block later taps'), !(await env.useDisabled()));
+  await page.evaluate(() => { window.__throwNext = true; });
+  await page.click('.pf-poster-use');
+  await env.done();
+  const r = await env.res();
+  const c = await closedState(page);
+  check(L('a failing crop rejects the promise and closes the overlay'), r && r.error === 'boom' && c.n === 0 && c.ovOk && c.net === 0, JSON.stringify({ r, c }));
+}
+
 export async function runExtras(env) {
   await testCancel(env);
+  await testRobustness(env);
   await testInitialAndCrops(env);
   await testPosterSizes(env);
   await testPortrait(env);

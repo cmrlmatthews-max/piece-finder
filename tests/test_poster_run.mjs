@@ -109,6 +109,8 @@ async function testOpening(env) {
       widths: zb.map((e) => rr(e).width), sw: parseFloat(q('.pf-poster-stage').style.width), sh: parseFloat(q('.pf-poster-stage').style.height),
       cw: pan.clientWidth, baseW: q('.pf-poster-base').width, baseH: q('.pf-poster-base').height,
       markerW: q('.pf-poster-marker').width, scrollLeft: pan.scrollLeft, bodyOverflow: document.body.style.overflow,
+      titleH: rr(q('.pf-poster-title')).height, titleLH: parseFloat(getComputedStyle(q('.pf-poster-title')).lineHeight),
+      titleClipped: q('.pf-poster-title').scrollWidth > q('.pf-poster-title').clientWidth + 1,
       canvasInPan: q('.pf-poster-base').parentNode.parentNode === pan && q('.pf-poster-marker').parentNode === q('.pf-poster-base').parentNode,
       markerPos: getComputedStyle(q('.pf-poster-marker')).position, markerEvents: getComputedStyle(q('.pf-poster-marker')).pointerEvents,
     };
@@ -117,6 +119,7 @@ async function testOpening(env) {
   check(L('one overlay.pf-poster-overlay appended to body'), s.n === 1 && s.parentBody && s.pos === 'fixed');
   check(L('title text'), s.title === 'Tap the empty spot', s.title);
   check(L('button texts'), s.cancel === 'Cancel' && s.use === 'Use this spot');
+  check(L('title fits on one line at 390 px (not cut off)'), s.titleH <= s.titleLH * 1.5 && !s.titleClipped, `height ${f1(s.titleH)} line ${f1(s.titleLH)}`);
   check(L('Use this spot starts disabled'), s.useDisabled === true);
   check(L('zoom buttons 1x 2x 4x, default 2x pressed'), s.zoomTexts.join() === ['1×', '2×', '4×'].join() && s.pressed.join() === 'false,true,false', s.zoomTexts.join(' '));
   check(L('slider 4..25, default 10, label "Spot size", readout 10%'),
@@ -183,6 +186,14 @@ async function testTapAccuracy(env) {
   const w = await env.observe();
   check(L('tap with a 5 px wiggle still counts and moves the marker'), w.yel.n > 0 && near(w.yel.x, wx + 3, 1.6) && near(w.yel.y, wy + 4, 1.6),
     `marker ${f1(w.yel.x)},${f1(w.yel.y)} want ${f1(wx + 3)},${f1(wy + 4)}`);
+  // Threshold: 5 px right + 5 px down = 7.07 px is still a tap, 6 + 6 = 8.49 px is not.
+  const bx = wx + 20, by = wy + 20;
+  await page.mouse.move(bx, by); await page.mouse.down(); await page.mouse.move(bx + 5, by + 5); await page.mouse.up();
+  const t1 = await env.observe();
+  check(L('7.07 px of movement is still a tap'), t1.yel.n > 0 && near(t1.yel.x, bx + 5, 1.6) && near(t1.yel.y, by + 5, 1.6), `marker ${f1(t1.yel.x)},${f1(t1.yel.y)} want ${bx + 5},${by + 5}`);
+  await page.mouse.move(bx + 60, by + 60); await page.mouse.down(); await page.mouse.move(bx + 66, by + 66); await page.mouse.up();
+  const t2 = await env.observe();
+  check(L('8.49 px of movement is not a tap (marker stays)'), t2.yel.n > 0 && near(t2.yel.x, bx + 5, 1.6) && near(t2.yel.y, by + 5, 1.6), `marker ${f1(t2.yel.x)},${f1(t2.yel.y)}`);
   await env.tap(exact.x, exact.y);
   await env.markerOnTarget('back on the target (old marker erased)', 10);
 }
@@ -246,6 +257,17 @@ async function testSlider(env) {
   const v = Number(await page.$eval('.pf-poster-slider', (e) => e.value));
   check(L('dragging the slider thumb changes the size'), v >= 12 && v <= 17, `value ${v}`);
   await env.markerOnTarget(`after dragging the slider to ${v}%`, v);
+  if (env.cfg.touch) {                       // a real finger drag (touch events) on the slider thumb
+    const cdp = await env.ctx.newCDPSession(page);
+    const v0 = Number(await page.$eval('.pf-poster-slider', (e) => e.value));
+    const x0 = sr.x + 20 + ((v0 - 4) / 21) * (sr.w - 40);
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: x0, y }] });
+    for (let i = 1; i <= 8; i++) await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: x0 + i * 12, y }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const v1 = Number(await page.$eval('.pf-poster-slider', (e) => e.value));
+    check(L('finger drag on the slider thumb changes the size'), v1 > v0, `value ${v0} -> ${v1}`);
+    await env.markerOnTarget(`after finger-dragging the slider to ${v1}%`, v1);
+  }
   await env.setSlider(12);
 }
 

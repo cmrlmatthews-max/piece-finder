@@ -29,6 +29,7 @@
     var di = CanvasRenderingContext2D.prototype.drawImage;
     CanvasRenderingContext2D.prototype.drawImage = function () {
       window.__draw.drawImage++;
+      if (window.__throwNext) { window.__throwNext = false; throw new Error('boom'); }   // lets a test force a failure
       return di.apply(this, arguments);
     };
   })();

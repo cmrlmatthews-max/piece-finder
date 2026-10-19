@@ -19,6 +19,7 @@ window.PF = window.PF || {};
   var FRAC_MAX = 0.25;
   var FRAC_DEFAULT = 0.1;
   var TAP_SLOP = 8;            // a tap may move less than this many CSS px
+  var STALE_MS = 1500;         // a pointer that went down this long ago and never came up is treated as lost
   var MAX_CANVAS_SIDE = 4096;  // iOS Safari canvas safety limit
   var CROP_MAX_EDGE = 1000;    // long edge of the returned crop
   var MARK_COLOR = '#ffd400';
@@ -35,13 +36,15 @@ window.PF = window.PF || {};
   -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
   overscroll-behavior:none;color-scheme:dark}
 .pf-poster-overlay,.pf-poster-overlay *{box-sizing:border-box}
-.pf-poster-overlay .pf-poster-bar{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px;
-  padding-top:calc(8px + env(safe-area-inset-top));padding-left:calc(12px + env(safe-area-inset-left));
-  padding-right:calc(12px + env(safe-area-inset-right));background:#1b1b1b;border-bottom:1px solid #333;touch-action:none}
-.pf-poster-overlay .pf-poster-title{flex:1 1 auto;min-width:0;margin:0;padding:0;font-size:16px;font-weight:600;
-  line-height:1.2;text-align:center;color:#eee;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.pf-poster-overlay .pf-poster-btn{flex:none;min-height:48px;min-width:48px;margin:0;padding:0 16px;border:1px solid #444;
-  border-radius:10px;background:#2a2a2a;color:#eee;font:inherit;font-weight:600;line-height:1.1;text-align:center;
+.pf-poster-overlay .pf-poster-bar{flex:none;display:flex;align-items:center;gap:6px;padding:8px 10px;
+  padding-top:calc(8px + env(safe-area-inset-top));padding-left:calc(10px + env(safe-area-inset-left));
+  padding-right:calc(10px + env(safe-area-inset-right));background:#1b1b1b;border-bottom:1px solid #333;touch-action:none}
+.pf-poster-overlay .pf-poster-title{flex:1 1 auto;min-width:0;margin:0;padding:0;font-size:15px;font-weight:600;
+  line-height:1.15;text-align:center;color:#eee;text-wrap:balance}
+.pf-poster-overlay .pf-poster-bar .pf-poster-btn{padding:0 12px;font-size:15px}
+.pf-poster-overlay .pf-poster-btn{flex:none;width:auto;max-width:none;height:auto;min-height:48px;min-width:48px;margin:0;
+  padding:0 16px;border:1px solid #444;border-radius:10px;background:#2a2a2a;color:#eee;font:inherit;font-weight:600;
+  line-height:1.1;letter-spacing:normal;text-transform:none;text-align:center;box-shadow:none;
   -webkit-appearance:none;appearance:none;cursor:pointer;touch-action:manipulation}
 .pf-poster-overlay .pf-poster-btn:active{background:#3b3b3b}
 .pf-poster-overlay .pf-poster-btn:focus-visible{outline:3px solid #ffd400;outline-offset:2px}
@@ -56,7 +59,7 @@ window.PF = window.PF || {};
 .pf-poster-overlay .pf-poster-controls{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;
   padding:8px 12px calc(8px + env(safe-area-inset-bottom));padding-left:calc(12px + env(safe-area-inset-left));
   padding-right:calc(12px + env(safe-area-inset-right));background:#1b1b1b;border-top:1px solid #333;touch-action:none}
-.pf-poster-overlay .pf-poster-zoom{flex:1 1 180px;max-width:300px;display:flex;gap:6px}
+.pf-poster-overlay .pf-poster-zoom{flex:1 1 180px;display:flex;gap:6px}
 .pf-poster-overlay .pf-poster-zoom .pf-poster-btn{flex:1 1 0;min-width:56px;padding:0 10px}
 .pf-poster-overlay .pf-poster-zoom .pf-poster-btn[aria-pressed="true"]{background:#2f2a10;border:2px solid #ffd400;color:#ffd400}
 .pf-poster-overlay .pf-poster-size{flex:1 1 220px;min-width:0;display:flex;align-items:center;gap:10px;margin:0}
@@ -160,10 +163,10 @@ window.PF = window.PF || {};
   }
 
   /* Creates the picker state from the pick() options (poster size, start zoom, start spot). */
-  function newState(opts, els, resolve) {
+  function newState(opts, els, resolve, reject) {
     var poster = opts.posterCanvas;
     var s = {
-      poster: poster, W: poster.width, H: poster.height, els: els, resolve: resolve,
+      poster: poster, W: poster.width, H: poster.height, els: els, resolve: resolve, reject: reject,
       zoom: DEFAULT_ZOOM, frac: FRAC_DEFAULT, cx: 0, cy: 0, has: false,
       containerW: 0, L: null, dirty: null, tap: null,
       listeners: [], resizeTimer: 0, done: false, prevOverflow: ''
@@ -338,9 +341,10 @@ window.PF = window.PF || {};
   /* Pointer down on the poster: starts tracking a possible tap (a second finger cancels it). */
   function onDown(s, e) {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
-    if (s.tap && s.tap.id !== e.pointerId) { s.tap.moved = true; return; }
+    var t = s.tap;
+    if (t && t.id !== e.pointerId && e.timeStamp - t.t < STALE_MS) { t.moved = true; return; }   // second finger
     var pan = s.els.pan;
-    s.tap = { id: e.pointerId, x: e.clientX, y: e.clientY, sl: pan.scrollLeft, st: pan.scrollTop, moved: false };
+    s.tap = { id: e.pointerId, t: e.timeStamp, x: e.clientX, y: e.clientY, sl: pan.scrollLeft, st: pan.scrollTop, moved: false };
   }
 
   /* Pointer move: only measures the distance. Nothing is drawn here. */
@@ -418,16 +422,32 @@ window.PF = window.PF || {};
     s.resolve(result);
   }
 
+  /* Closes the picker after an unexpected error and rejects the promise. */
+  function fail(s, err) {
+    if (s.done) return;
+    s.done = true;
+    teardown(s);
+    s.reject(err);
+  }
+
   /* Builds the { cx, cy, frac, cropCanvas } result for "Use this spot". */
   function makeResult(s) {
     return { cx: s.cx, cy: s.cy, frac: s.frac, cropCanvas: cropSquare(s.poster, s.cx, s.cy, s.frac) };
+  }
+
+  /* "Use this spot" button: builds the result and closes. If the crop fails, closes and rejects instead. */
+  function onUse(s) {
+    if (!s.has || s.done) return;
+    var result;
+    try { result = makeResult(s); } catch (err) { fail(s, err); return; }
+    finish(s, result);
   }
 
   /* Connects all buttons, the slider, the poster pointer events, Escape and window resize. */
   function wire(s) {
     var e = s.els;
     listen(s, e.cancel, 'click', function () { finish(s, null); });
-    listen(s, e.use, 'click', function () { if (s.has) finish(s, makeResult(s)); });
+    listen(s, e.use, 'click', function () { onUse(s); });
     e.zoomBtns.forEach(function (b) {
       listen(s, b, 'click', function () { setZoom(s, Number(b.getAttribute('data-zoom'))); });
     });
@@ -465,7 +485,7 @@ window.PF = window.PF || {};
       var s = null;
       try {
         injectStyle();
-        s = newState(opts, buildDom(), resolve);
+        s = newState(opts, buildDom(), resolve, reject);
         open(s);
       } catch (err) {
         if (s) teardown(s);
