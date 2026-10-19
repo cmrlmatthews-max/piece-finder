@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>poster.js test page</title>
+<style>
+  html, body { margin: 0; background: #0f1115; color: #e8eaf0; font-family: -apple-system, Helvetica, Arial, sans-serif; }
+  .filler { padding: 24px; min-height: 2000px; }
+</style>
+<!-- Instrumentation: must run before poster.js. Logs listener add/remove and counts drawImage calls. -->
+<script>
+  window.__log = { on: false, adds: [], removes: [] };
+  window.__draw = { drawImage: 0 };
+  (function () {
+    var add = EventTarget.prototype.addEventListener;
+    var rem = EventTarget.prototype.removeEventListener;
+    function cap(o) { return o === true || (o && o.capture) ? 1 : 0; }
+    EventTarget.prototype.addEventListener = function (t, f, o) {
+      if (window.__log.on) window.__log.adds.push({ tgt: this, t: t, f: f, c: cap(o) });
+      return add.call(this, t, f, o);
+    };
+    EventTarget.prototype.removeEventListener = function (t, f, o) {
+      if (window.__log.on) window.__log.removes.push({ tgt: this, t: t, f: f, c: cap(o) });
+      return rem.call(this, t, f, o);
+    };
+    var di = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function () {
+      window.__draw.drawImage++;
+      return di.apply(this, arguments);
+    };
+  })();
+</script>
+<script src="../poster.js"></script>
+</head>
+<body>
+<div class="filler"><h1>Page behind the overlay</h1><p>If you can see this, the overlay does not cover the page.</p></div>
+<script>
+  // Colors avoid yellow and pure red, so the test can find the marker (#ffd400) and the red target by color.
+  var PALETTE = ['#1f6f8b', '#6a4c93', '#2d6a4f', '#b5179e', '#3a86ff', '#0b8a6a',
+                 '#7209b7', '#c9184a', '#4361ee', '#2a9d8f', '#9d4edd', '#5e60ce'];
+
+  // Builds a poster canvas: colored tiles, a fine grid, coordinate labels and one pure red target square.
+  window.makePoster = function (W, H) {
+    var c = document.createElement('canvas');
+    c.width = W; c.height = H;
+    var g = c.getContext('2d');
+    var tw = W / 6, th = H / 4;
+    for (var r = 0; r < 4; r++) for (var q = 0; q < 6; q++) {
+      g.fillStyle = PALETTE[r * 6 + q];
+      g.fillRect(q * tw, r * th, tw + 1, th + 1);
+    }
+    var rg = g.createRadialGradient(W * 0.3, H * 0.4, 10, W * 0.3, H * 0.4, W * 0.5);
+    rg.addColorStop(0, 'rgba(255,255,255,0.35)');
+    rg.addColorStop(1, 'rgba(0,0,0,0.25)');
+    g.fillStyle = rg; g.fillRect(0, 0, W, H);
+    g.lineWidth = Math.max(1, W / 2400);
+    g.strokeStyle = 'rgba(255,255,255,0.28)';
+    for (var x = 0; x <= W; x += W / 24) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); }
+    for (var y = 0; y <= H; y += H / 16) { g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke(); }
+    g.strokeStyle = 'rgba(255,255,255,0.7)';
+    g.lineWidth = Math.max(2, W / 800);
+    g.font = 'bold ' + Math.round(W / 85) + 'px sans-serif';
+    g.fillStyle = '#fff';
+    for (var gx = 0; gx <= 6; gx++) for (var gy = 0; gy <= 4; gy++) {
+      g.beginPath(); g.moveTo(gx * tw, 0); g.lineTo(gx * tw, H); g.moveTo(0, gy * th); g.lineTo(W, gy * th); g.stroke();
+      g.fillText(Math.round(gx * tw) + ',' + Math.round(gy * th), gx * tw + 6, gy * th + W / 70);
+    }
+    var size = Math.round(W / 30);
+    var tx = Math.round(W * 0.625), ty = Math.round(H * 0.375);
+    g.fillStyle = '#ff0000';
+    g.fillRect(tx, ty, size, size);
+    window.TARGET = { x: tx, y: ty, size: size, cx: tx + size / 2, cy: ty + size / 2 };
+    return c;
+  };
+
+  // Starts a pick() with a fresh poster of the given size. The result is stored in window.__res when it resolves.
+  window.startPick = function (o) {
+    o = o || {};
+    window.__poster = window.makePoster(o.W || 2400, o.H || 1600);
+    window.__done = false;
+    window.__res = undefined;
+    window.__log.on = true; window.__log.adds = []; window.__log.removes = [];
+    window.__bodyOverflowBefore = document.body.style.overflow;
+    window.__p = PF.poster.pick({ posterCanvas: window.__poster, initial: o.initial });
+    window.__p.then(function (r) {
+      window.__crop = r ? r.cropCanvas : null;
+      window.__res = r ? { cx: r.cx, cy: r.cy, frac: r.frac, cw: r.cropCanvas.width, ch: r.cropCanvas.height } : null;
+      window.__done = true;
+    }, function (e) { window.__res = { error: String(e && e.message || e) }; window.__done = true; });
+  };
+
+  // Number of listeners added since startPick() that were never removed.
+  window.listenerNet = function () {
+    var left = window.__log.adds.slice();
+    window.__log.removes.forEach(function (r) {
+      for (var i = 0; i < left.length; i++) {
+        if (left[i].tgt === r.tgt && left[i].t === r.t && left[i].f === r.f && left[i].c === r.c) { left.splice(i, 1); break; }
+      }
+    });
+    return left.length;
+  };
+
+  // Finds the bounding box of fully yellow (#ffd400) pixels on the marker canvas, in canvas pixels.
+  window.markerStats = function () {
+    var c = document.querySelector('.pf-poster-marker');
+    if (!c || !c.width) return null;
+    var d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, c.width, c.height).data;
+    var minX = 1e9, minY = 1e9, maxX = -1, maxY = -1, n = 0;
+    for (var y = 0; y < c.height; y++) for (var x = 0; x < c.width; x++) {
+      var i = (y * c.width + x) * 4;
+      if (d[i] >= 235 && d[i + 1] >= 195 && d[i + 1] <= 228 && d[i + 2] <= 40 && d[i + 3] >= 250) {
+        n++; if (x < minX) minX = x; if (x > maxX) maxX = x; if (y < minY) minY = y; if (y > maxY) maxY = y;
+      }
+    }
+    var css = c.getBoundingClientRect();
+    return { n: n, minX: minX, maxX: maxX, minY: minY, maxY: maxY, cw: c.width, ch: c.height,
+             cssW: css.width, cssH: css.height };
+  };
+
+  // Compares the crop canvas with poster region (x0, y0, side) and returns the mean absolute channel difference.
+  window.cropDiff = function (x0, y0, side) {
+    var crop = window.__crop;
+    var a = crop.getContext('2d').getImageData(0, 0, crop.width, crop.height).data;
+    var t = document.createElement('canvas'); t.width = crop.width; t.height = crop.height;
+    var g = t.getContext('2d');
+    g.imageSmoothingQuality = 'high';
+    g.drawImage(window.__poster, x0, y0, side, side, 0, 0, crop.width, crop.height);
+    var b = g.getImageData(0, 0, t.width, t.height).data;
+    var sum = 0;
+    for (var i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+    return sum / a.length;
+  };
+</script>
+</body>
+</html>
