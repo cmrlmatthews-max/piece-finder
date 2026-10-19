@@ -312,14 +312,14 @@
   });
 
   // ---- loadFile / EXIF ------------------------------------------------------
-  test('fixture check: browser really honours the EXIF tag we build', async function () {
-    const blob = await exifBlob(6);
-    const none = await createImageBitmap(blob, { imageOrientation: 'none' });
-    eq(none.width + 'x' + none.height, '200x100', 'raw size');
-    none.close();
-    const fromImage = await createImageBitmap(blob, { imageOrientation: 'from-image' });
-    eq(fromImage.width + 'x' + fromImage.height, '100x200', 'oriented size');
-    fromImage.close();
+  test('fixture check: the EXIF segment we build is what rotates the image', async function () {
+    const plain = await PF.img.canvasToBlob(markerCanvas(), 'image/jpeg', 0.95);   // same JPEG, no EXIF
+    const a = await createImageBitmap(plain, { imageOrientation: 'from-image' });
+    eq(a.width + 'x' + a.height, '200x100', 'no EXIF: not rotated');
+    a.close();
+    const b = await createImageBitmap(await exifBlob(6), { imageOrientation: 'from-image' });
+    eq(b.width + 'x' + b.height, '100x200', 'EXIF 6: rotated');
+    b.close();
   });
   test('loadFile: EXIF orientation applied on the ImageBitmap path (1, 3, 6, 8)', async function () {
     for (const spec of ORIENTATIONS) {
