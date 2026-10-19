@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PF.db tests</title>
+</head>
+<body>
+<p>PF.db / PF.settings tests. Run with <code>node tests/test_img_db_run.cjs</code>.</p>
+<script src="../db.js"></script>
+<script>
+// Tiny test harness: tests register themselves; the Playwright runner calls __run(i) for each one.
+(function () {
+  'use strict';
+  const tests = [];
+  function test(name, fn) { tests.push({ name: name, fn: fn }); }
+  function ok(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+  function eq(actual, expected, msg) {
+    if (actual !== expected) throw new Error((msg || 'eq') + ': expected ' + JSON.stringify(expected) + ', got ' + JSON.stringify(actual));
+  }
+  function same(actual, expected, msg) { eq(JSON.stringify(actual), JSON.stringify(expected), msg); }
+  async function rejects(promise, re, msg) {
+    let err = null;
+    try { await promise; } catch (e) { err = e; }
+    if (!err) throw new Error((msg || 'rejects') + ': promise did not reject');
+    if (re && !re.test(err.name + ': ' + err.message)) throw new Error((msg || 'rejects') + ': unexpected error "' + err.name + ': ' + err.message + '"');
+    return err;
+  }
+  // Runs fn with obj[key] replaced by `value`, then puts the original property back.
+  async function withStub(obj, key, value, fn) {
+    const desc = Object.getOwnPropertyDescriptor(obj, key);
+    Object.defineProperty(obj, key, { value: value, configurable: true, writable: true });
+    try { return await fn(); } finally {
+      if (desc) Object.defineProperty(obj, key, desc); else delete obj[key];
+    }
+  }
+  function ids(list) { return list.map(function (o) { return o.id; }).sort().join(','); }
+
+  // ---- fixtures -------------------------------------------------------------
+  function bytesBlob(n, seed, type) {
+    const b = new Uint8Array(n);
+    for (let i = 0; i < n; i++) b[i] = (i * 31 + seed) & 255;
+    return new Blob([b], { type: type || 'image/jpeg' });
+  }
+  function group(id, name) {
+    return { id: id, name: name || id, createdAt: 1000, photo: bytesBlob(500, 1), w: 1600, h: 1200, thumb: bytesBlob(80, 2) };
+  }
+  function piece(id, groupId, status) {
+    return { id: id, groupId: groupId, bbox: { x: 1, y: 2, w: 30, h: 40 }, thumb: bytesBlob(40, 3),
+             status: status || 'loose', createdAt: 2000, placedAt: status === 'placed' ? 3000 : null };
+  }
+  async function seed() {
+    await PF.db.clearAll();
+    await PF.db.bulkPut('groups', [group('g1', 'Group 1'), group('g2', 'Group 2')]);
+    await PF.db.bulkPut('pieces', [
+      piece('p1', 'g1', 'loose'), piece('p2', 'g1', 'placed'), piece('p3', 'g1', 'loose'),
+      piece('p4', 'g2', 'loose'), piece('p5', 'g2', 'placed')
+    ]);
+  }
+  async function counts() {
+    return [(await PF.db.all('groups')).length, (await PF.db.all('pieces')).length, (await PF.db.all('meta')).length];
+  }
+  async function bytesOf(blob) { return Array.from(new Uint8Array(await blob.arrayBuffer())); }
+
+  // ==== PF.db ================================================================
+  test('open: creates the 3 stores, keyPaths and indexes', async function () {
+    const db = await PF.db.open();
+    ok(db instanceof IDBDatabase, 'resolves an IDBDatabase');
+    eq(db.name, 'piecefinder', 'name'); eq(db.version, 1, 'version');
+    same(Array.from(db.objectStoreNames).sort(), ['groups', 'meta', 'pieces'], 'stores');
+    const tx = db.transaction(['groups', 'pieces', 'meta'], 'readonly');
+    eq(tx.objectStore('groups').keyPath, 'id', 'groups keyPath');
+    eq(tx.objectStore('pieces').keyPath, 'id', 'pieces keyPath');
+    eq(tx.objectStore('meta').keyPath, 'key', 'meta keyPath');
+    same(Array.from(tx.objectStore('groups').indexNames), [], 'groups indexes');
+    same(Array.from(tx.objectStore('meta').indexNames), [], 'meta indexes');
+    const pieces = tx.objectStore('pieces');
+    same(Array.from(pieces.indexNames).sort(), ['groupId', 'status'], 'pieces indexes');
+    eq(pieces.index('groupId').keyPath, 'groupId', 'groupId keyPath');
+    eq(pieces.index('status').keyPath, 'status', 'status keyPath');
+    eq(pieces.index('groupId').unique, false, 'groupId not unique');
+  });
+  test('open: cached (same promise, same connection), also when called in parallel', async function () {
+    const p1 = PF.db.open(), p2 = PF.db.open();
+    ok(p1 === p2, 'same promise object');
+    const [a, b, c] = await Promise.all([PF.db.open(), p1, PF.db.open()]);
+    ok(a === b && b === c, 'same connection');
+  });
+  test('put / get: round trip with Blobs, missing key is undefined', async function () {
+    await PF.db.clearAll();
+    const g = group('g-rt', 'Round trip');
+    eq(await PF.db.put('groups', g), undefined, 'put resolves void');
+    const back = await PF.db.get('groups', 'g-rt');
+    eq(back.id, 'g-rt'); eq(back.name, 'Round trip'); eq(back.w, 1600); eq(back.h, 1200); eq(back.createdAt, 1000);
+    ok(back.photo instanceof Blob && back.thumb instanceof Blob, 'blobs come back as Blobs');
+    eq(back.photo.type, 'image/jpeg', 'blob type kept');
+    same(await bytesOf(back.photo), await bytesOf(g.photo), 'photo bytes');
+    same(await bytesOf(back.thumb), await bytesOf(g.thumb), 'thumb bytes');
+    eq(await PF.db.get('groups', 'nope'), undefined, 'missing key');
+  });
+  test('put: replaces an existing record with the same key', async function () {
+    await PF.db.clearAll();
+    await PF.db.put('pieces', piece('px', 'g1', 'loose'));
+    const upd = piece('px', 'g1', 'placed'); upd.placedAt = 12345;
+    await PF.db.put('pieces', upd);
+    const got = await PF.db.get('pieces', 'px');
+    eq(got.status, 'placed'); eq(got.placedAt, 12345);
+    eq((await PF.db.all('pieces')).length, 1, 'still one record');
+  });
+  test('bulkPut: stores many records; empty list is a no-op', async function () {
+    await PF.db.clearAll();
+    const list = []; for (let i = 0; i < 144; i++) list.push(piece('b' + i, 'gbig', i % 3 ? 'loose' : 'placed'));
+    eq(await PF.db.bulkPut('pieces', list), undefined, 'resolves void');
+    eq((await PF.db.all('pieces')).length, 144, '144 saved');
+    eq(await PF.db.bulkPut('pieces', []), undefined, 'empty list');
+    eq(await PF.db.bulkPut('pieces', null), undefined, 'null list');
+    eq((await PF.db.all('pieces')).length, 144, 'unchanged');
+  });
+  test('bulkPut: is ONE transaction - a bad record rolls everything back', async function () {
+    await PF.db.clearAll();
+    const bad = { notAnId: true }; // no keyPath value -> DataError
+    await rejects(PF.db.bulkPut('pieces', [piece('ok1', 'g'), piece('ok2', 'g'), bad]), /DataError/, 'bad record');
+    eq((await PF.db.all('pieces')).length, 0, 'nothing was saved');
+    await PF.db.bulkPut('pieces', [piece('ok1', 'g'), piece('ok2', 'g')]); // db still usable afterwards
+    eq((await PF.db.all('pieces')).length, 2, 'recovered');
+  });
+  test('all: returns every record of the store', async function () {
+    await seed();
+    eq(ids(await PF.db.all('groups')), 'g1,g2');
+    eq(ids(await PF.db.all('pieces')), 'p1,p2,p3,p4,p5');
+    same(await PF.db.all('meta'), [], 'empty store gives []');
+  });
+  test('byIndex: groupId and status', async function () {
+    await seed();
+    eq(ids(await PF.db.byIndex('pieces', 'groupId', 'g1')), 'p1,p2,p3', 'g1 pieces');
+    eq(ids(await PF.db.byIndex('pieces', 'groupId', 'g2')), 'p4,p5', 'g2 pieces');
+    eq(ids(await PF.db.byIndex('pieces', 'status', 'loose')), 'p1,p3,p4', 'loose');
+    eq(ids(await PF.db.byIndex('pieces', 'status', 'placed')), 'p2,p5', 'placed');
+    same(await PF.db.byIndex('pieces', 'groupId', 'nobody'), [], 'no match');
+  });
+  test('byIndex: null/undefined value matches nothing (never "everything")', async function () {
+    await seed();
+    same(await PF.db.byIndex('pieces', 'groupId', undefined), [], 'undefined');
+    same(await PF.db.byIndex('pieces', 'groupId', null), [], 'null');
+  });
+  test('byIndex: unknown index or store rejects with a DOMException', async function () {
+    await seed();
+    await rejects(PF.db.byIndex('pieces', 'colour', 'x'), /NotFoundError/, 'unknown index');
+    await rejects(PF.db.byIndex('nostore', 'groupId', 'x'), /NotFoundError/, 'unknown store');
+    await rejects(PF.db.get('nostore', 'x'), /NotFoundError/, 'get unknown store');
+    eq((await PF.db.all('pieces')).length, 5, 'db still fine');
+  });
+  test('del: removes one record, missing key is fine', async function () {
+    await seed();
+    eq(await PF.db.del('pieces', 'p2'), undefined, 'resolves void');
+    eq(await PF.db.get('pieces', 'p2'), undefined, 'gone');
+    eq(ids(await PF.db.all('pieces')), 'p1,p3,p4,p5', 'others stay');
+    await PF.db.del('pieces', 'never-existed');
+    eq((await PF.db.all('pieces')).length, 4, 'unchanged');
+  });
+  test('deleteGroup: removes the group and ALL its pieces, leaves other groups alone', async function () {
+    await seed();
+    eq(await PF.db.deleteGroup('g1'), undefined, 'resolves void');
+    eq(await PF.db.get('groups', 'g1'), undefined, 'group gone');
+    same(await PF.db.byIndex('pieces', 'groupId', 'g1'), [], 'its pieces gone');
+    eq(ids(await PF.db.all('groups')), 'g2', 'other group stays');
+    eq(ids(await PF.db.all('pieces')), 'p4,p5', 'other pieces stay');
+    await PF.db.deleteGroup('does-not-exist');
+    eq((await PF.db.all('pieces')).length, 2, 'unknown group id changes nothing');
+  });
+  test('deleteGroup: handles a big group (200 pieces)', async function () {
+    await PF.db.clearAll();
+    await PF.db.put('groups', group('big'));
+    await PF.db.put('groups', group('keep'));
+    const list = []; for (let i = 0; i < 200; i++) list.push(piece('bp' + i, 'big'));
+    list.push(piece('kp1', 'keep'));
+    await PF.db.bulkPut('pieces', list);
+    await PF.db.deleteGroup('big');
+    same(await counts(), [1, 1, 0], 'only the other group and its piece remain');
+  });
+  test('deleteGroup: rejects without a group id and deletes nothing', async function () {
+    await seed();
+    for (const bad of [undefined, null, '']) await rejects(PF.db.deleteGroup(bad), /group id/i, 'id=' + String(bad));
+    same(await counts(), [2, 5, 0], 'everything still there');
+  });
+  test('meta: poster record round trip', async function () {
+    await PF.db.clearAll();
+    const poster = { key: 'poster', blob: bytesBlob(2000, 9), w: 2400, h: 1600 };
+    await PF.db.put('meta', poster);
+    const back = await PF.db.get('meta', 'poster');
+    eq(back.key, 'poster'); eq(back.w, 2400); eq(back.h, 1600);
+    ok(back.blob instanceof Blob && back.blob.size === 2000, 'blob size');
+    await PF.db.del('meta', 'poster');
+    eq(await PF.db.get('meta', 'poster'), undefined, 'deleted');
+  });
+  test('clearAll: empties all three stores', async function () {
+    await seed();
+    await PF.db.put('meta', { key: 'poster', blob: bytesBlob(10, 1), w: 1, h: 1 });
+    same(await counts(), [2, 5, 1], 'before');
+    eq(await PF.db.clearAll(), undefined, 'resolves void');
+    same(await counts(), [0, 0, 0], 'after');
+    await PF.db.put('groups', group('after'));
+    eq((await PF.db.all('groups')).length, 1, 'still usable');
+  });
+  test('writes are committed before the promise resolves (read in a separate connection)', async function () {
+    await PF.db.clearAll();
+    await PF.db.put('groups', group('durable'));
+    const raw = await new Promise(function (res, rej) {
+      const r = indexedDB.open('piecefinder'); r.onsuccess = function () { res(r.result); }; r.onerror = function () { rej(r.error); };
+    });
+    try {
+      const rec = await new Promise(function (res, rej) {
+        const q = raw.transaction('groups', 'readonly').objectStore('groups').get('durable');
+        q.onsuccess = function () { res(q.result); }; q.onerror = function () { rej(q.error); };
+      });
+      eq(rec && rec.id, 'durable');
+    } finally { raw.close(); }
+  });
+  test('parallel operations all succeed and keep their order', async function () {
+    await PF.db.clearAll();
+    const jobs = [];
+    for (let i = 0; i < 30; i++) jobs.push(PF.db.put('pieces', piece('par' + i, 'gp', 'loose')));
+    await Promise.all(jobs);
+    eq((await PF.db.byIndex('pieces', 'groupId', 'gp')).length, 30, 'all 30 saved');
+    const [a, b] = await Promise.all([PF.db.deleteGroup('gp'), PF.db.put('groups', group('gq'))]);
+    eq(a, undefined); eq(b, undefined);
+    same(await counts(), [1, 0, 0], 'after mixed parallel ops');
+  });
+  test('requestPersist: never throws, resolves a boolean', async function () {
+    ok(typeof PF.db.requestPersist === 'function');
+    eq(typeof (await PF.db.requestPersist()), 'boolean', 'normal call');
+    await withStub(navigator.storage, 'persist', function () { throw new Error('boom'); }, async function () {
+      eq(await PF.db.requestPersist(), false, 'persist throws');
+    });
+    await withStub(navigator.storage, 'persist', function () { return Promise.reject(new Error('denied')); }, async function () {
+      eq(await PF.db.requestPersist(), false, 'persist rejects');
+    });
+    await withStub(navigator.storage, 'persist', function () { return Promise.resolve(true); }, async function () {
+      eq(await PF.db.requestPersist(), true, 'persist granted');
+    });
+    await withStub(navigator.storage, 'persist', undefined, async function () {
+      eq(await PF.db.requestPersist(), false, 'persist missing');
+    });
+    await withStub(navigator, 'storage', undefined, async function () {
+      eq(await PF.db.requestPersist(), false, 'navigator.storage missing');
+    });
+  });
+  test('open: rejects with a plain Error when IndexedDB is missing; the failure is not cached', async function () {
+    const cur = await PF.db.open();
+    cur.close(); // stale cached connection: the next call has to open a new one
+    const realIDB = Object.getOwnPropertyDescriptor(window, 'indexedDB');
+    Object.defineProperty(window, 'indexedDB', { value: undefined, configurable: true, writable: true });
+    try {
+      const err = await rejects(PF.db.get('groups', 'x'), null, 'no indexedDB');
+      ok(err instanceof Error && /cannot save data/i.test(err.message), 'plain message: ' + err.message);
+    } finally {
+      Object.defineProperty(window, 'indexedDB', realIDB);
+    }
+    eq(await PF.db.get('groups', 'x'), undefined, 'works again afterwards');
+  });
+  test('recovers when the connection was closed behind its back (iOS background kill)', async function () {
+    await seed();
+    const db = await PF.db.open();
+    db.close(); // no events fire for a plain close(), like a silent iOS drop
+    eq(ids(await PF.db.all('pieces')), 'p1,p2,p3,p4,p5', 'read after silent close');
+    const db2 = await PF.db.open();
+    ok(db2 !== db, 'a fresh connection was made');
+    await PF.db.put('groups', group('g3'));
+    eq(ids(await PF.db.all('groups')), 'g1,g2,g3', 'write after recovery');
+  });
+  test('recovers after the browser wipes site data (CDP: IndexedDB cleared)', async function () {
+    if (typeof window.__clearIndexedDB !== 'function') return 'skipped';
+    await seed();
+    await PF.db.open();
+    await window.__clearIndexedDB();
+    same(await counts(), [0, 0, 0], 'database is empty but usable');
+    await PF.db.put('groups', group('fresh'));
+    eq(ids(await PF.db.all('groups')), 'fresh', 'works after wipe');
+    const names = Array.from((await PF.db.open()).objectStoreNames).sort();
+    same(names, ['groups', 'meta', 'pieces'], 'schema was recreated');
+  });
+  test('onversionchange: closes our connection so a newer version can open; later calls reopen', async function () {
+    await seed();
+    const mine = await PF.db.open();
+    let blocked = false;
+    const v2 = await new Promise(function (res, rej) {
+      const r = indexedDB.open('piecefinder', 2);
+      r.onblocked = function () { blocked = true; };
+      r.onsuccess = function () { res(r.result); };
+      r.onerror = function () { rej(r.error); };
+    });
+    eq(blocked, false, 'upgrade was not blocked by us');
+    eq(v2.version, 2, 'raw v2 connection opened');
+    // our connection must be closed now
+    let threw = null;
+    try { mine.transaction('groups'); } catch (e) { threw = e; }
+    ok(threw && threw.name === 'InvalidStateError', 'old connection closed itself');
+    v2.close();
+    // clean up the fake v2 database so PF.db (version 1) can start fresh
+    await new Promise(function (res, rej) {
+      const r = indexedDB.deleteDatabase('piecefinder'); r.onsuccess = function () { res(); }; r.onerror = function () { rej(r.error); }; r.onblocked = function () { rej(new Error('delete blocked')); };
+    });
+    eq(await PF.db.get('groups', 'g1'), undefined, 'PF.db reopened a fresh v1 database');
+    const again = await PF.db.open();
+    ok(again !== mine && again.version === 1, 'new v1 connection');
+    await PF.db.put('groups', group('after-upgrade'));
+    eq((await PF.db.all('groups')).length, 1, 'usable');
+  });
+
+  // ==== PF.settings ==========================================================
+  const KEY = 'pf.settings';
+  function resetSettings() { localStorage.removeItem(KEY); PF.settings.set({}); localStorage.removeItem(KEY); }
+  test('settings: defaults when nothing is saved', function () {
+    resetSettings();
+    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 });
+    eq(localStorage.getItem(KEY), null, 'get() does not write');
+  });
+  test('settings: set merges over defaults, saves JSON under pf.settings, returns the new settings', function () {
+    resetSettings();
+    const r1 = PF.settings.set({ apiKey: 'sk-ant-test' });
+    same(r1, { apiKey: 'sk-ant-test', model: 'claude-haiku-5-5', topN: 8 }, 'returned');
+    same(PF.settings.get(), r1, 'get matches');
+    same(JSON.parse(localStorage.getItem(KEY)), r1, 'localStorage JSON');
+    const r2 = PF.settings.set({ topN: 11, model: 'claude-sonnet-5-5' });
+    same(r2, { apiKey: 'sk-ant-test', model: 'claude-sonnet-5-5', topN: 11 }, 'second merge keeps earlier keys');
+    const r3 = PF.settings.set({});
+    same(r3, r2, 'empty partial changes nothing');
+    same(PF.settings.set(), r2, 'no argument changes nothing');
+    same(PF.settings.set(null), r2, 'null changes nothing');
+  });
+  test('settings: values saved by an older/other page are merged over defaults', function () {
+    resetSettings();
+    localStorage.setItem(KEY, JSON.stringify({ apiKey: 'abc' }));
+    same(PF.settings.get(), { apiKey: 'abc', model: 'claude-haiku-5-5', topN: 8 });
+    localStorage.setItem(KEY, JSON.stringify({ topN: 6, extra: 'kept' }));
+    const s = PF.settings.get();
+    eq(s.topN, 6); eq(s.apiKey, ''); eq(s.extra, 'kept', 'unknown keys survive');
+    PF.settings.set({ apiKey: 'zzz' });
+    eq(JSON.parse(localStorage.getItem(KEY)).extra, 'kept', 'unknown keys survive a set()');
+  });
+  test('settings: corrupt or wrong-shaped JSON gives defaults and never throws', function () {
+    const defaults = { apiKey: '', model: 'claude-haiku-5-5', topN: 8 };
+    ['{not json', '', 'null', '[1,2,3]', '"a string"', '42', 'true'].forEach(function (bad) {
+      localStorage.setItem(KEY, bad);
+      same(PF.settings.get(), defaults, 'stored: ' + bad);
+    });
+    localStorage.setItem(KEY, '{broken');
+    same(PF.settings.set({ topN: 5 }), { apiKey: '', model: 'claude-haiku-5-5', topN: 5 }, 'set() over corrupt data');
+  });
+  test('settings: get() returns a fresh object each time', function () {
+    resetSettings();
+    const a = PF.settings.get(); a.apiKey = 'mutated'; a.topN = 99;
+    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 }, 'mutating a result does not leak');
+    ok(PF.settings.get() !== PF.settings.get(), 'new object per call');
+  });
+  test('settings: undefined values are ignored, apiKey is trimmed', function () {
+    resetSettings();
+    PF.settings.set({ apiKey: 'k1', model: 'claude-opus-5-5', topN: 9 });
+    const r = PF.settings.set({ apiKey: undefined, model: undefined, topN: undefined });
+    same(r, { apiKey: 'k1', model: 'claude-opus-5-5', topN: 9 }, 'undefined does not wipe saved values');
+    eq(PF.settings.set({ apiKey: '  sk-ant-xyz \n' }).apiKey, 'sk-ant-xyz', 'trimmed');
+    eq(PF.settings.set({ apiKey: '' }).apiKey, '', 'can be cleared');
+  });
+  test('settings: wrong types fall back to defaults; topN accepts numeric text', function () {
+    resetSettings();
+    localStorage.setItem(KEY, JSON.stringify({ apiKey: 123, model: null, topN: 'lots' }));
+    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 }, 'read side');
+    eq(PF.settings.set({ topN: '10' }).topN, 10, 'numeric text becomes a number');
+    eq(typeof PF.settings.get().topN, 'number', 'number type');
+    eq(PF.settings.set({ topN: 7.9 }).topN, 7, 'whole number');
+    eq(PF.settings.set({ topN: 0 }).topN, 8, 'zero is not valid');
+    eq(PF.settings.set({ model: '' }).model, 'claude-haiku-5-5', 'empty model is not valid');
+  });
+  test('settings: keeps working for the session when localStorage refuses to save or read', function () {
+    resetSettings();
+    const proto = Storage.prototype;
+    const desc = { set: Object.getOwnPropertyDescriptor(proto, 'setItem'), get: Object.getOwnPropertyDescriptor(proto, 'getItem') };
+    Object.defineProperty(proto, 'setItem', { value: function () { throw new DOMException('quota', 'QuotaExceededError'); }, configurable: true, writable: true });
+    try {
+      const r = PF.settings.set({ apiKey: 'in-memory', topN: 12 });
+      same(r, { apiKey: 'in-memory', model: 'claude-haiku-5-5', topN: 12 }, 'set() still returns the new settings');
+      same(PF.settings.get(), r, 'get() sees them');
+      Object.defineProperty(proto, 'getItem', { value: function () { throw new DOMException('blocked', 'SecurityError'); }, configurable: true, writable: true });
+      same(PF.settings.get(), r, 'get() still works when getItem throws');
+    } finally {
+      Object.defineProperty(proto, 'setItem', desc.set);
+      Object.defineProperty(proto, 'getItem', desc.get);
+    }
+    // storage is back: the next save goes to localStorage again
+    const r2 = PF.settings.set({ topN: 6 });
+    same(r2, { apiKey: 'in-memory', model: 'claude-haiku-5-5', topN: 6 }, 'merge continues from memory copy');
+    same(JSON.parse(localStorage.getItem(KEY)), r2, 'saved to localStorage again');
+    resetSettings();
+  });
+
+  // ---- hooks for the runner -----------------------------------------------
+  window.__names = function () { return tests.map(function (t) { return t.name; }); };
+  window.__run = async function (i) {
+    const t = tests[i];
+    try {
+      const r = await t.fn();
+      return { name: t.name, ok: true, note: r === 'skipped' ? 'skipped' : '' };
+    } catch (e) { return { name: t.name, ok: false, error: String((e && e.stack) || e) }; }
+  };
+})();
+</script>
+</body>
+</html>

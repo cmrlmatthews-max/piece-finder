@@ -140,6 +140,9 @@ window.PF = window.PF || {};
     const usedRows = Math.ceil(chunk.length / cols);
     const canvas = makeCanvas(cols * cell, usedRows * cell);
     const ctx = getCtx(canvas);
+    // Start all white: unused cells in the last row must not be transparent (a JPEG turns those black).
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
     const placed = [];
     chunk.forEach((entry, i) => {
       const number = firstNumber + i;

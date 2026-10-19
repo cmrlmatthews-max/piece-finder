@@ -150,7 +150,8 @@ window.T = (function () {
   // Cuts the number strip of every cell out of a (possibly shrunk) sheet and stacks them in one tall picture.
   // `scale` = how much the sheet was shrunk. Used to test that numbers stay readable.
   function stripStack(sheet, cols, rows, cell, scale, grow) {
-    const sw = Math.round(cell * scale), sh = Math.round(44 * scale);
+    // Cut inside the cell border lines (6 px left/right, 4 px bottom) so OCR does not see the lines.
+    const sw = Math.round((cell - 12) * scale), sh = Math.round(40 * scale);
     const gap = 14, pad = 20;
     const out = canvas((sw + 2 * pad) * grow, (cols * rows * (sh + gap) + pad) * grow);
     const g = out.getContext('2d');
@@ -161,7 +162,7 @@ window.T = (function () {
     let n = 0;
     for (let r = 0; r < rows; r++) {
       for (let c = 0; c < cols; c++) {
-        const sx = Math.round(c * cell * scale), sy = Math.round((r * cell + cell - 44) * scale);
+        const sx = Math.round((c * cell + 6) * scale), sy = Math.round((r * cell + cell - 44) * scale);
         g.drawImage(sheet, sx, sy, sw, sh, pad * grow, (pad + n * (sh + gap)) * grow, sw * grow, sh * grow);
         n++;
       }

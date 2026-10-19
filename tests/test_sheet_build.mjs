@@ -108,6 +108,14 @@ try {
   check('ids keep the input order', ids.every((id, i) => id === 'p' + (i + 1)));
   check('build is fast (< 1000 ms for 40 pieces)', built.ms < 1000, `${built.ms.toFixed(0)} ms`);
 
+  // The empty cells of the last sheet must be opaque white (a transparent pixel would turn black in a JPEG).
+  const unused = await page.evaluate(() => {
+    const c = window.__sheets[1].canvas;
+    return [T.px(c, 1300, 50), T.px(c, 1800, 300), T.px(c, 1895, 315), T.px(window.__sheets[0].canvas, 1895, 1895)];
+  });
+  check('unused area of the last sheet is opaque white', unused.slice(0, 3).every((p) => isColor(p, [255, 255, 255], 0) && p[3] === 255), JSON.stringify(unused));
+  check('the border of the last cell is opaque too', unused[3][3] === 255 && isColor(unused[3], [138, 138, 138], 1), JSON.stringify(unused[3]));
+
   // ---------------------------------------------------------------- 2. pixel checks of the layout
   const cells = await page.evaluate(() => {
     const out = [];
