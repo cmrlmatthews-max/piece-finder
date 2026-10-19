@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>segment.js test page</title>
+<style>
+  body { font: 14px/1.4 -apple-system, Helvetica, Arial, sans-serif; margin: 16px; background: #111; color: #eee; }
+  pre { white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<h3>PF.segment test page</h3>
+<p>Driven by <code>tests/test_segment.mjs</code> (Playwright). Calls <code>window.pfTest.runFixture(url, opts, truth, reps)</code>.</p>
+<pre id="log">loading…</pre>
+
+<!-- Classic scripts, same order as index.html. imgutil.js is optional: if it is missing or broken
+     the page falls back to a plain <img>. -->
+<script src="../imgutil.js" onerror="window.__noImgutil = true"></script>
+<script src="../segment.js"></script>
+<script>
+(function () {
+  'use strict';
+
+  // Loads a fixture URL into a canvas. Uses PF.img (imgutil.js) when it works, else a plain <img>.
+  async function loadCanvas(url) {
+    const blob = await (await fetch(url)).blob();
+    if (window.PF && PF.img && typeof PF.img.loadFile === 'function' && typeof PF.img.toCanvas === 'function') {
+      try {
+        const src = await PF.img.loadFile(blob);
+        const canvas = await PF.img.toCanvas(src, 1600);
+        if (src && typeof src.close === 'function') src.close();
+        return { canvas: canvas, loader: 'PF.img' };
+      } catch (e) {
+        console.warn('PF.img failed, falling back to <img>: ' + e);
+      }
+    }
+    const img = new Image();
+    const objUrl = URL.createObjectURL(blob);
+    img.src = objUrl;
+    await img.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    canvas.getContext('2d').drawImage(img, 0, 0);
+    URL.revokeObjectURL(objUrl);
+    return { canvas: canvas, loader: 'plain <img>' };
+  }
+
+  // Draws the debug picture: photo, translucent mask, boxes (orange = merged), true centres (cyan), caption.
+  function drawDebug(canvas, res, dbg, truth, caption) {
+    const out = document.createElement('canvas');
+    out.width = canvas.width; out.height = canvas.height;
+    const g = out.getContext('2d');
+    g.drawImage(canvas, 0, 0);
+    if (dbg && dbg.mask) {
+      const m = document.createElement('canvas');
+      m.width = dbg.w; m.height = dbg.h;
+      const mg = m.getContext('2d');
+      const id = mg.createImageData(dbg.w, dbg.h);
+      for (let i = 0; i < dbg.mask.length; i++) {
+        if (dbg.mask[i]) { id.data[i * 4] = 255; id.data[i * 4 + 1] = 0; id.data[i * 4 + 2] = 200; id.data[i * 4 + 3] = 80; }
+      }
+      mg.putImageData(id, 0, 0);
+      g.imageSmoothingEnabled = false;
+      g.drawImage(m, 0, 0, out.width, out.height);
+    }
+    g.font = 'bold 22px -apple-system, Helvetica, Arial, sans-serif';
+    g.textBaseline = 'top';
+    res.pieces.forEach(function (p, i) {
+      g.lineWidth = 3;
+      g.strokeStyle = p.merged ? '#ff7a00' : '#ffd400';
+      g.strokeRect(p.x + 1.5, p.y + 1.5, p.w - 3, p.h - 3);
+      g.lineWidth = 4; g.strokeStyle = '#000'; g.strokeText(String(i + 1), p.x + 5, p.y + 4);
+      g.fillStyle = p.merged ? '#ff7a00' : '#ffd400'; g.fillText(String(i + 1), p.x + 5, p.y + 4);
+    });
+    (truth.centers || []).forEach(function (c) {
+      g.beginPath(); g.arc(c[0], c[1], 6, 0, Math.PI * 2);
+      g.lineWidth = 3; g.strokeStyle = '#000'; g.stroke();
+      g.lineWidth = 1.5; g.strokeStyle = '#00e5ff'; g.stroke();
+    });
+    g.fillStyle = 'rgba(0,0,0,0.65)'; g.fillRect(0, 0, out.width, 34);
+    g.fillStyle = '#fff'; g.font = '20px -apple-system, Helvetica, Arial, sans-serif';
+    g.fillText(caption, 10, 7);
+    return out.toDataURL('image/png');
+  }
+
+  // Runs detect on one fixture: one cold call (timed), `reps` warm calls, then draws the debug picture.
+  async function runFixture(url, opts, truth, reps, name) {
+    const loaded = await loadCanvas(url);
+    const canvas = loaded.canvas;
+    PF.segment._debug = {};
+    const t0 = performance.now();
+    const res = PF.segment.detect(canvas, opts || {});
+    const cold = performance.now() - t0;
+    const dbg = PF.segment._debug;
+    PF.segment._debug = null;
+    const times = [];
+    for (let i = 0; i < (reps || 5); i++) {
+      const a = performance.now();
+      PF.segment.detect(canvas, opts || {});
+      times.push(performance.now() - a);
+    }
+    times.sort(function (a, b) { return a - b; });
+    const warm = times.length ? times[times.length >> 1] : cold;
+    const caption = name + ': ' + res.pieces.length + ' boxes (truth ' + truth.count + '), T=' + res.threshold.toFixed(1) +
+      ', cold ' + cold.toFixed(0) + ' ms, warm ' + warm.toFixed(0) + ' ms';
+    return {
+      res: res, cold: cold, warm: warm, loader: loaded.loader,
+      size: [canvas.width, canvas.height],
+      otsuT: dbg ? dbg.otsuT : null, components: dbg ? dbg.components : null,
+      png: drawDebug(canvas, res, dbg, truth, caption)
+    };
+  }
+
+  // Checks PF.segment.otsu on small hand-made histograms; returns a list of {name, ok, got}.
+  function otsuChecks() {
+    const out = [];
+    const bimodal = new Array(256).fill(0);
+    for (let i = 0; i < 256; i++) {
+      bimodal[i] = Math.round(1000 * Math.exp(-Math.pow(i - 12, 2) / 50) + 300 * Math.exp(-Math.pow(i - 170, 2) / 800));
+    }
+    let t = PF.segment.otsu(bimodal);
+    out.push({ name: 'bimodal histogram splits between modes', ok: t > 20 && t < 150, got: t });
+    const two = new Array(256).fill(0); two[40] = 500; two[200] = 500;
+    t = PF.segment.otsu(two);
+    out.push({ name: 'two spikes (40, 200): threshold in [40, 200)', ok: t >= 40 && t < 200, got: t });
+    t = PF.segment.otsu(new Int32Array(256));
+    out.push({ name: 'empty histogram returns 0', ok: t === 0, got: t });
+    const one = new Array(256).fill(0); one[77] = 1234;
+    t = PF.segment.otsu(one);
+    out.push({ name: 'single-bin histogram returns an index', ok: Number.isInteger(t) && t >= 0 && t < 256, got: t });
+    return out;
+  }
+
+  window.pfTest = { runFixture: runFixture, otsuChecks: otsuChecks, hasImgutil: function () { return !!(window.PF && PF.img); } };
+  document.getElementById('log').textContent = 'ready (' + (window.PF && PF.img ? 'PF.img found' : 'no PF.img, plain <img> fallback') + ')';
+})();
+</script>
+</body>
+</html>
