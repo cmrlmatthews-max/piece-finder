@@ -33,7 +33,7 @@ window.PF = window.PF || {};
 .pf-poster-overlay{position:fixed;top:0;right:0;bottom:0;left:0;z-index:10000;display:flex;flex-direction:column;
   background:#111;color:#eee;font:16px/1.3 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent;
-  overscroll-behavior:none}
+  overscroll-behavior:none;color-scheme:dark}
 .pf-poster-overlay,.pf-poster-overlay *{box-sizing:border-box}
 .pf-poster-overlay .pf-poster-bar{flex:none;display:flex;align-items:center;gap:8px;padding:8px 12px;
   padding-top:calc(8px + env(safe-area-inset-top));padding-left:calc(12px + env(safe-area-inset-left));
@@ -49,7 +49,7 @@ window.PF = window.PF || {};
 .pf-poster-overlay .pf-poster-use:active{background:#e6bf00}
 .pf-poster-overlay .pf-poster-btn:disabled{background:#242424;border-color:#333;color:#777;cursor:default}
 .pf-poster-overlay .pf-poster-pan{flex:1 1 auto;min-height:0;display:flex;overflow:auto;-webkit-overflow-scrolling:touch;
-  overscroll-behavior:contain;touch-action:pan-x pan-y;background:#0a0a0a;scrollbar-gutter:stable}
+  overscroll-behavior:contain;touch-action:pan-x pan-y;background:#0a0a0a;scrollbar-gutter:stable;scrollbar-color:#666 #1a1a1a}
 .pf-poster-overlay .pf-poster-stage{position:relative;flex:none;margin:auto;cursor:crosshair}
 .pf-poster-overlay .pf-poster-stage canvas{position:absolute;top:0;left:0;display:block;width:100%;height:100%;
   max-width:none;max-height:none;margin:0;padding:0;border:0;pointer-events:none}

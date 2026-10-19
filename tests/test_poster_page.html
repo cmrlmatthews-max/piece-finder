@@ -16,12 +16,14 @@
     var add = EventTarget.prototype.addEventListener;
     var rem = EventTarget.prototype.removeEventListener;
     function cap(o) { return o === true || (o && o.capture) ? 1 : 0; }
+    // Only calls that come from poster.js are logged (Playwright adds its own page listeners).
+    function fromPoster() { return window.__log.on && /poster\.js/.test(new Error().stack || ''); }
     EventTarget.prototype.addEventListener = function (t, f, o) {
-      if (window.__log.on) window.__log.adds.push({ tgt: this, t: t, f: f, c: cap(o) });
+      if (fromPoster()) window.__log.adds.push({ tgt: this, t: t, f: f, c: cap(o) });
       return add.call(this, t, f, o);
     };
     EventTarget.prototype.removeEventListener = function (t, f, o) {
-      if (window.__log.on) window.__log.removes.push({ tgt: this, t: t, f: f, c: cap(o) });
+      if (fromPoster()) window.__log.removes.push({ tgt: this, t: t, f: f, c: cap(o) });
       return rem.call(this, t, f, o);
     };
     var di = CanvasRenderingContext2D.prototype.drawImage;
@@ -99,6 +101,17 @@
       }
     });
     return left.length;
+  };
+
+  // Describes the listeners that were added since startPick() and never removed (for debugging).
+  window.listenerLeft = function () {
+    var left = window.__log.adds.slice();
+    window.__log.removes.forEach(function (r) {
+      for (var i = 0; i < left.length; i++) {
+        if (left[i].tgt === r.tgt && left[i].t === r.t && left[i].f === r.f && left[i].c === r.c) { left.splice(i, 1); break; }
+      }
+    });
+    return left.map(function (l) { return (l.tgt.nodeName || l.tgt.constructor.name) + ':' + l.t; });
   };
 
   // Finds the bounding box of fully yellow (#ffd400) pixels on the marker canvas, in canvas pixels.

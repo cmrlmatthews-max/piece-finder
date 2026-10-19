@@ -23,9 +23,11 @@
   'use strict';
 
   // Loads a fixture URL into a canvas. Uses PF.img (imgutil.js) when it works, else a plain <img>.
+  // Open the page with ?loader=plain to force the plain <img> path.
   async function loadCanvas(url) {
     const blob = await (await fetch(url)).blob();
-    if (window.PF && PF.img && typeof PF.img.loadFile === 'function' && typeof PF.img.toCanvas === 'function') {
+    const forcePlain = new URLSearchParams(location.search).get('loader') === 'plain';
+    if (!forcePlain && window.PF && PF.img && typeof PF.img.loadFile === 'function' && typeof PF.img.toCanvas === 'function') {
       try {
         const src = await PF.img.loadFile(blob);
         const canvas = await PF.img.toCanvas(src, 1600);
@@ -132,7 +134,42 @@
     return out;
   }
 
-  window.pfTest = { runFixture: runFixture, otsuChecks: otsuChecks, hasImgutil: function () { return !!(window.PF && PF.img); } };
+  // White 1600x1200 canvas with dark red rectangles [x, y, w, h].
+  function scene(rects) {
+    const c = document.createElement('canvas');
+    c.width = 1600; c.height = 1200;
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, 1600, 1200);
+    g.fillStyle = '#b01030';
+    rects.forEach(function (r) { g.fillRect(r[0], r[1], r[2], r[3]); });
+    return c;
+  }
+
+  // n squares of 90 px on a 4-column grid, well away from the border.
+  function squares(n) {
+    return Array.from({ length: n }, function (_, i) { return [200 + (i % 4) * 300, 200 + Math.floor(i / 4) * 300, 90, 90]; });
+  }
+
+  // Checks steps 5 and 7 on hand-drawn scenes: opening removes thin lines and thin necks,
+  // wide necks survive, and the median rule drops small blobs. Returns a list of {name, ok, got}.
+  function synthChecks() {
+    const out = [];
+    const count = function (rects) { return PF.segment.detect(scene(rects)).pieces.length; };
+    const add = function (name, got, want) { out.push({ name: name, ok: got === want, got: got + ' (want ' + want + ')' }); };
+    add('6 plain squares are 6 boxes', count(squares(6)), 6);
+    add('4 px hairline (600 px long) is removed by the opening', count(squares(6).concat([[100, 1000, 600, 4]])), 6);
+    const four = [[800, 300, 90, 90], [1100, 300, 90, 90], [300, 700, 90, 90], [600, 700, 90, 90]];
+    const dumbbell = function (neck) { return [[300, 300, 90, 90], [420, 300, 90, 90], [390, 343, 30, neck]].concat(four); };
+    add('two squares joined by a 6 px neck are split (6 boxes)', count(dumbbell(6)), 6);
+    add('two squares joined by a 14 px neck stay one box (5 boxes)', count(dumbbell(14)), 5);
+    add('a 36 px blob among 90 px squares is dropped by the median rule', count(squares(6).concat([[1000, 800, 36, 36]])), 6);
+    const r = PF.segment.detect(scene(squares(6)), { pad: 0 }).pieces[0];
+    out.push({ name: 'pad 0 gives the exact 90 px box', ok: r.w === 90 && r.h === 90, got: r.w + 'x' + r.h });
+    return out;
+  }
+
+  window.pfTest = { runFixture: runFixture, otsuChecks: otsuChecks, synthChecks: synthChecks,
+    hasImgutil: function () { return !!(window.PF && PF.img); } };
   document.getElementById('log').textContent = 'ready (' + (window.PF && PF.img ? 'PF.img found' : 'no PF.img, plain <img> fallback') + ')';
 })();
 </script>

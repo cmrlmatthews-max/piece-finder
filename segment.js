@@ -17,7 +17,7 @@ window.PF = window.PF || {};
   var OPEN_STEPS = 2;                 // step 5: erode twice, then dilate twice (3x3 each)
   var MIN_COMPONENT_AREA = 30;        // step 7: components below this are noise
   var KEEP_FRAC_OF_MEDIAN = 0.25;     // step 7: keep area >= 0.25 * median
-  var MERGED_FACTOR = 2.5;            // step 7: merged = area > 2.5 * median
+  var MERGED_FACTOR = 1.7;            // step 7: merged = area > 1.7 * median (two equal touching pieces measure ~1.9x)
 
   // Returns v when it is a finite number, else the default.
   function num(v, def) {
@@ -32,10 +32,15 @@ window.PF = window.PF || {};
     return (n & 1) ? a[(n - 1) >> 1] : (a[n / 2 - 1] + a[n / 2]) / 2;
   }
 
+  // Pixel size of the input. A canvas has width/height; an <img> needs naturalWidth/naturalHeight.
+  function sourceSize(src) {
+    return { W: src.naturalWidth || src.width || 0, H: src.naturalHeight || src.height || 0 };
+  }
+
   // Step 1. Draws the input into a smaller canvas (long edge <= 800) and returns its pixels.
   // Very large inputs are halved step by step first, so the final resample does not alias.
   function makeWork(src) {
-    var W = src.width, H = src.height;
+    var size = sourceSize(src), W = size.W, H = size.H;
     var s = Math.min(1, WORK_LONG_EDGE / Math.max(W, H));
     var w = Math.max(1, Math.round(W * s)), h = Math.max(1, Math.round(H * s));
     var cur = src, cw = W, ch = H;
@@ -230,7 +235,7 @@ window.PF = window.PF || {};
       var b = toInputBox(c, pad, g);
       return {
         x: b.x, y: b.y, w: b.w, h: b.h,
-        cx: b.x + b.w / 2, cy: b.y + b.h / 2,
+        cx: Math.round(b.x + b.w / 2), cy: Math.round(b.y + b.h / 2),
         area: c.area,
         merged: c.area > MERGED_FACTOR * med
       };
@@ -254,7 +259,8 @@ window.PF = window.PF || {};
     var scaleOpt = num(opts.thresholdScale, 1.0) || 1.0;
     var minAreaFrac = num(opts.minAreaFrac, 0.0005);
     var pad = num(opts.pad, 0.08);
-    if (!canvas || !canvas.width || !canvas.height) {
+    var size = canvas ? sourceSize(canvas) : { W: 0, H: 0 };
+    if (!size.W || !size.H) {                                        // nothing to scan
       return { pieces: [], bg: { r: 0, g: 0, b: 0 }, threshold: THRESHOLD_FLOOR * scaleOpt, scale: 1 };
     }
 
