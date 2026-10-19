@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PF.img tests</title>
+</head>
+<body>
+<p>PF.img tests. Run with <code>node tests/test_img_db_run.cjs</code>.</p>
+<script src="../imgutil.js"></script>
+<script>
+// Tiny test harness: tests register themselves; the Playwright runner calls __run(i) for each one.
+(function () {
+  'use strict';
+  const tests = [];
+  function test(name, fn) { tests.push({ name: name, fn: fn }); }
+  function ok(cond, msg) { if (!cond) throw new Error(msg || 'assertion failed'); }
+  function eq(actual, expected, msg) {
+    if (actual !== expected) throw new Error((msg || 'eq') + ': expected ' + expected + ', got ' + actual);
+  }
+  function near(actual, expected, tol, msg) {
+    const bad = actual.some(function (v, i) { return Math.abs(v - expected[i]) > tol; });
+    if (bad) throw new Error((msg || 'color') + ': expected ~[' + expected + '], got [' + actual + ']');
+  }
+  async function rejects(promise, re, msg) {
+    let err = null;
+    try { await promise; } catch (e) { err = e; }
+    if (!err) throw new Error((msg || 'rejects') + ': promise did not reject');
+    if (!(err instanceof Error)) throw new Error((msg || 'rejects') + ': rejected with a non-Error: ' + err);
+    if (re && !re.test(err.message)) throw new Error((msg || 'rejects') + ': unexpected message "' + err.message + '"');
+    return err;
+  }
+
+  // ---- fixtures -------------------------------------------------------------
+  function mk(w, h, fill) {
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    if (fill) { const x = c.getContext('2d'); x.fillStyle = fill; x.fillRect(0, 0, w, h); }
+    return c;
+  }
+  function px(c, x, y) {
+    const d = c.getContext('2d').getImageData(x, y, 1, 1).data;
+    return [d[0], d[1], d[2]];
+  }
+  // 200x100 white canvas with a 30x30 green square in the TOP-LEFT corner (used to see rotations).
+  function markerCanvas() {
+    const c = mk(200, 100, '#ffffff');
+    const x = c.getContext('2d'); x.fillStyle = '#00ff00'; x.fillRect(0, 0, 30, 30);
+    return c;
+  }
+  // Inserts an EXIF APP1 segment holding only the Orientation tag right after the JPEG SOI marker.
+  function withOrientation(jpegBytes, orientation) {
+    const exif = [0x45, 0x78, 0x69, 0x66, 0x00, 0x00,             // "Exif\0\0"
+      0x4d, 0x4d, 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08,             // big-endian TIFF header, IFD0 at 8
+      0x00, 0x01,                                                 // one entry
+      0x01, 0x12, 0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, orientation, 0x00, 0x00, // Orientation, SHORT
+      0x00, 0x00, 0x00, 0x00];                                    // no next IFD
+    const len = exif.length + 2;
+    const app1 = [0xff, 0xe1, (len >> 8) & 0xff, len & 0xff].concat(exif);
+    const out = new Uint8Array(jpegBytes.length + app1.length);
+    out.set(jpegBytes.subarray(0, 2), 0);
+    out.set(app1, 2);
+    out.set(jpegBytes.subarray(2), 2 + app1.length);
+    return out;
+  }
+  async function exifBlob(orientation) {
+    const jpeg = await PF.img.canvasToBlob(markerCanvas(), 'image/jpeg', 0.95);
+    const bytes = new Uint8Array(await jpeg.arrayBuffer());
+    return new Blob([withOrientation(bytes, orientation)], { type: 'image/jpeg' });
+  }
+  // For each EXIF orientation: expected output size and where the green marker should land.
+  const ORIENTATIONS = [
+    { o: 1, w: 200, h: 100, marker: [15, 15],  other: [184, 84] },
+    { o: 3, w: 200, h: 100, marker: [184, 84], other: [15, 15] },
+    { o: 6, w: 100, h: 200, marker: [84, 15],  other: [15, 184] },
+    { o: 8, w: 100, h: 200, marker: [15, 184], other: [84, 15] }
+  ];
+  async function checkOrientation(c, spec, label) {
+    eq(c.width, spec.w, label + ' width');
+    eq(c.height, spec.h, label + ' height');
+    near(px(c, spec.marker[0], spec.marker[1]), [0, 255, 0], 60, label + ' marker corner is green');
+    near(px(c, spec.other[0], spec.other[1]), [255, 255, 255], 40, label + ' opposite corner is white');
+  }
+  // Runs fn with obj[key] replaced by `value`, then puts the original property back.
+  async function withStub(obj, key, value, fn) {
+    const desc = Object.getOwnPropertyDescriptor(obj, key);
+    Object.defineProperty(obj, key, { value: value, configurable: true, writable: true });
+    try { return await fn(); } finally {
+      if (desc) Object.defineProperty(obj, key, desc); else delete obj[key];
+    }
+  }
+
+  // ---- toCanvas -------------------------------------------------------------
+  test('toCanvas: 3000x2000 -> 1600x1067', function () {
+    const src = mk(3000, 2000, '#336699');
+    const out = PF.img.toCanvas(src, 1600);
+    eq(out.width, 1600, 'width'); eq(out.height, 1067, 'height');
+    ok(out !== src, 'must be a new canvas');
+    eq(src.width, 3000, 'source untouched');
+  });
+  test('toCanvas: portrait 2000x3000 -> 1067x1600', function () {
+    const out = PF.img.toCanvas(mk(2000, 3000, '#336699'), 1600);
+    eq(out.width, 1067, 'width'); eq(out.height, 1600, 'height');
+  });
+  test('toCanvas: never upscales, still returns a new canvas', function () {
+    const src = mk(100, 50, '#ff0000');
+    const out = PF.img.toCanvas(src, 1600);
+    eq(out.width, 100); eq(out.height, 50);
+    ok(out !== src, 'must be a new canvas');
+    near(px(out, 50, 25), [255, 0, 0], 2, 'content copied');
+  });
+  test('toCanvas: missing / Infinity / bad limit keeps full size', function () {
+    const src = mk(640, 480, '#00ff00');
+    [undefined, Infinity, 0, -5, NaN, null].forEach(function (lim) {
+      const out = PF.img.toCanvas(src, lim);
+      eq(out.width + 'x' + out.height, '640x480', 'limit ' + lim);
+    });
+  });
+  test('toCanvas: exact limit and tiny aspect stay valid (>= 1px)', function () {
+    const a = PF.img.toCanvas(mk(1600, 1200), 1600);
+    eq(a.width + 'x' + a.height, '1600x1200');
+    const b = PF.img.toCanvas(mk(5000, 3), 100);
+    eq(b.width, 100); ok(b.height >= 1, 'height at least 1');
+  });
+  test('toCanvas: accepts ImageBitmap and <img> sources', async function () {
+    const src = mk(1200, 800, '#abcdef');
+    const bmp = await createImageBitmap(src);
+    const a = PF.img.toCanvas(bmp, 600);
+    eq(a.width + 'x' + a.height, '600x400', 'bitmap');
+    bmp.close();
+    const blob = await PF.img.canvasToBlob(src, 'image/png');
+    const img = await PF.img.loadFile(blob);
+    const b = PF.img.toCanvas(img, 300);
+    eq(b.width + 'x' + b.height, '300x200', 'loadFile result');
+    const url = URL.createObjectURL(blob);
+    const el = new Image(); el.src = url; await el.decode(); URL.revokeObjectURL(url);
+    const c = PF.img.toCanvas(el, 150);
+    eq(c.width + 'x' + c.height, '150x100', '<img>');
+  });
+  test('toCanvas: rejects bad input with a plain Error', function () {
+    let err = null;
+    try { PF.img.toCanvas(null, 100); } catch (e) { err = e; }
+    ok(err instanceof Error && /no image/i.test(err.message), 'null source');
+    err = null;
+    try { PF.img.toCanvas(mk(0, 0), 100); } catch (e) { err = e; }
+    ok(err instanceof Error && /no size/i.test(err.message), 'empty canvas');
+  });
+  test('toCanvas: asks for high-quality smoothing', function () {
+    const proto = CanvasRenderingContext2D.prototype;
+    const desc = Object.getOwnPropertyDescriptor(proto, 'imageSmoothingQuality');
+    const seen = [];
+    Object.defineProperty(proto, 'imageSmoothingQuality', {
+      configurable: true,
+      get: desc.get,
+      set: function (v) { seen.push(v); desc.set.call(this, v); }
+    });
+    try { PF.img.toCanvas(mk(400, 300), 200); } finally { Object.defineProperty(proto, 'imageSmoothingQuality', desc); }
+    ok(seen.length > 0 && seen.every(function (v) { return v === 'high'; }), 'saw: ' + seen.join(','));
+  });
+  test('toCanvas: big reduction averages a 1px checkerboard to grey', function () {
+    const src = mk(1600, 800);
+    const x = src.getContext('2d');
+    const data = x.createImageData(1600, 800);
+    for (let j = 0; j < 800; j++) for (let i = 0; i < 1600; i++) {
+      const v = ((i + j) % 2) ? 255 : 0, k = (j * 1600 + i) * 4;
+      data.data[k] = v; data.data[k + 1] = v; data.data[k + 2] = v; data.data[k + 3] = 255;
+    }
+    x.putImageData(data, 0, 0);
+    const out = PF.img.toCanvas(src, 200); // 8x smaller
+    eq(out.width + 'x' + out.height, '200x100');
+    [[10, 10], [100, 50], [190, 90], [57, 33]].forEach(function (p) {
+      near(px(out, p[0], p[1]), [128, 128, 128], 30, 'pixel ' + p);
+    });
+  });
+
+  // ---- canvasToBlob / blobToCanvas -----------------------------------------
+  test('canvasToBlob -> blobToCanvas round trip keeps size and colours', async function () {
+    const src = mk(300, 200, '#ff0000');
+    const x = src.getContext('2d'); x.fillStyle = '#0000ff'; x.fillRect(150, 0, 150, 200);
+    const blob = await PF.img.canvasToBlob(src, 'image/jpeg', 0.9);
+    ok(blob instanceof Blob && blob.size > 0, 'blob');
+    eq(blob.type, 'image/jpeg', 'type');
+    const back = await PF.img.blobToCanvas(blob);
+    eq(back.width + 'x' + back.height, '300x200');
+    near(px(back, 40, 100), [255, 0, 0], 30, 'left is red');
+    near(px(back, 260, 100), [0, 0, 255], 30, 'right is blue');
+  });
+  test('canvasToBlob: default is JPEG at 0.85; png type works; quality changes size', async function () {
+    const src = mk(256, 256, '#000');
+    const x = src.getContext('2d');
+    for (let i = 0; i < 2000; i++) { x.fillStyle = 'rgb(' + (i * 37 % 256) + ',' + (i * 91 % 256) + ',' + (i * 53 % 256) + ')'; x.fillRect((i * 17) % 250, (i * 29) % 250, 9, 9); }
+    const def = await PF.img.canvasToBlob(src);
+    eq(def.type, 'image/jpeg', 'default type');
+    const png = await PF.img.canvasToBlob(src, 'image/png');
+    eq(png.type, 'image/png', 'png type');
+    const lo = await PF.img.canvasToBlob(src, 'image/jpeg', 0.2);
+    const hi = await PF.img.canvasToBlob(src, 'image/jpeg', 0.95);
+    ok(lo.size < hi.size, 'quality 0.2 (' + lo.size + ') should be smaller than 0.95 (' + hi.size + ')');
+  });
+  test('canvasToBlob: rejects with a clear Error when toBlob gives null (Safari, huge canvas)', async function () {
+    const c = mk(10, 10, '#fff');
+    c.toBlob = function (cb) { cb(null); };
+    const err = await rejects(PF.img.canvasToBlob(c), /could not save the image/i, 'null blob');
+    ok(/too large/i.test(err.message), 'mentions size: ' + err.message);
+  });
+  test('canvasToBlob: rejects when toBlob throws (tainted canvas)', async function () {
+    const c = mk(10, 10, '#fff');
+    c.toBlob = function () { throw new DOMException('tainted', 'SecurityError'); };
+    await rejects(PF.img.canvasToBlob(c), /could not save the image.*tainted/i, 'throwing toBlob');
+  });
+  test('canvasToBlob: rejects for an empty or missing canvas', async function () {
+    await rejects(PF.img.canvasToBlob(mk(0, 0)), /empty/i, '0x0 canvas');
+    await rejects(PF.img.canvasToBlob(null), /empty/i, 'null canvas');
+  });
+  test('blobToCanvas: honours maxLongEdge (and never upscales)', async function () {
+    const blob = await PF.img.canvasToBlob(mk(800, 400, '#123456'));
+    const small = await PF.img.blobToCanvas(blob, 200);
+    eq(small.width + 'x' + small.height, '200x100', 'downscaled');
+    const same = await PF.img.blobToCanvas(blob, 5000);
+    eq(same.width + 'x' + same.height, '800x400', 'not upscaled');
+  });
+  test('blobToCanvas: non-image Blob rejects with a plain message', async function () {
+    await rejects(PF.img.blobToCanvas(new Blob(['hello'], { type: 'text/plain' })), /could not open that image/i);
+  });
+
+  // ---- data URL / base64 ----------------------------------------------------
+  test('blobToDataURL returns a data URL string', async function () {
+    const blob = await PF.img.canvasToBlob(mk(20, 20, '#f00'));
+    const url = await PF.img.blobToDataURL(blob);
+    eq(typeof url, 'string');
+    ok(url.indexOf('data:image/jpeg;base64,') === 0, 'prefix: ' + url.slice(0, 40));
+  });
+  test('blobToBase64: jpeg media_type and base64 without a data: prefix', async function () {
+    const blob = await PF.img.canvasToBlob(mk(40, 40, '#0f0'));
+    const r = await PF.img.blobToBase64(blob);
+    eq(Object.keys(r).sort().join(','), 'data,media_type', 'shape');
+    eq(r.media_type, 'image/jpeg');
+    eq(typeof r.data, 'string');
+    ok(r.data.length > 0 && r.data.indexOf('data:') !== 0 && r.data.indexOf(',') < 0, 'no data: prefix / comma');
+    ok(/^[A-Za-z0-9+/]+={0,2}$/.test(r.data), 'valid base64 characters');
+    const bin = atob(r.data);
+    eq(bin.charCodeAt(0), 0xff, 'JPEG magic 1'); eq(bin.charCodeAt(1), 0xd8, 'JPEG magic 2');
+    eq(bin.length, blob.size, 'decodes to the same byte count');
+  });
+  test('blobToBase64: png type is kept; untyped blobs are sniffed', async function () {
+    const png = await PF.img.canvasToBlob(mk(8, 8, '#00f'), 'image/png');
+    eq((await PF.img.blobToBase64(png)).media_type, 'image/png', 'png');
+    const jpeg = await PF.img.canvasToBlob(mk(8, 8, '#00f'));
+    const untypedJpeg = new Blob([await jpeg.arrayBuffer()]);
+    eq(untypedJpeg.type, '', 'fixture has no type');
+    eq((await PF.img.blobToBase64(untypedJpeg)).media_type, 'image/jpeg', 'sniffed jpeg');
+    const untypedPng = new Blob([await png.arrayBuffer()]);
+    eq((await PF.img.blobToBase64(untypedPng)).media_type, 'image/png', 'sniffed png');
+    eq((await PF.img.blobToBase64(new Blob([new Uint8Array([1, 2, 3])]))).media_type, 'image/jpeg', 'unknown defaults to jpeg');
+  });
+
+  // ---- crop ---------------------------------------------------------------
+  function halves() { // 200x100: left half red, right half blue
+    const c = mk(200, 100, '#ff0000');
+    const x = c.getContext('2d'); x.fillStyle = '#0000ff'; x.fillRect(100, 0, 100, 100);
+    return c;
+  }
+  test('crop: clamps a region that sticks out of the canvas', function () {
+    const c = mk(100, 100, '#808080');
+    const cases = [
+      [-50, -50, 200, 200, '100x100'],   // covers everything
+      [90, 90, 50, 50, '10x10'],         // sticks out bottom-right
+      [-10, 20, 30, 30, '20x30'],        // sticks out left
+      [20, -10, 30, 30, '30x20'],        // sticks out top
+      [0, 0, 100, 100, '100x100'],       // exact
+      [10.4, 10.4, 20.2, 20.2, '21x21']  // fractions grow to whole pixels (floor start, ceil end)
+    ];
+    cases.forEach(function (t) {
+      const out = PF.img.crop(c, t[0], t[1], t[2], t[3]);
+      eq(out.width + 'x' + out.height, t[4], 'crop(' + t.slice(0, 4) + ')');
+    });
+  });
+  test('crop: copies the right pixels (including clamped ones)', function () {
+    const c = halves();
+    const left = PF.img.crop(c, 0, 0, 50, 50);
+    near(px(left, 25, 25), [255, 0, 0], 2, 'left crop red');
+    const right = PF.img.crop(c, 150, 20, 100, 100); // clamps to 50 x 80
+    eq(right.width + 'x' + right.height, '50x80');
+    near(px(right, 25, 40), [0, 0, 255], 2, 'right crop blue');
+    const straddle = PF.img.crop(c, 80, 0, 40, 10);
+    near(px(straddle, 5, 5), [255, 0, 0], 2, 'straddle left part');
+    near(px(straddle, 35, 5), [0, 0, 255], 2, 'straddle right part');
+  });
+  test('crop: downscales to maxLongEdge, never upscales, returns a new canvas', function () {
+    const c = halves();
+    const a = PF.img.crop(c, 0, 0, 200, 100, 100);
+    eq(a.width + 'x' + a.height, '100x50', 'downscaled');
+    const b = PF.img.crop(c, 0, 0, 20, 20, 100);
+    eq(b.width + 'x' + b.height, '20x20', 'not upscaled');
+    const d = PF.img.crop(c, 0, 0, 200, 100);
+    eq(d.width + 'x' + d.height, '200x100', 'default = no limit');
+    ok(d !== c, 'new canvas');
+    const t = PF.img.crop(mk(1000, 1000, '#fff'), 100, 100, 640, 320, 320);
+    eq(t.width + 'x' + t.height, '320x160', 'piece-thumb style crop');
+  });
+  test('crop: degenerate regions give a 1x1 canvas instead of throwing', function () {
+    const c = halves();
+    [[500, 500, 10, 10], [-30, -30, 10, 10], [10, 10, 0, 0], [NaN, NaN, NaN, NaN], [undefined, undefined, undefined, undefined]].forEach(function (t) {
+      const out = PF.img.crop(c, t[0], t[1], t[2], t[3]);
+      ok(out.width >= 1 && out.height >= 1 && out.width <= 200 && out.height <= 100, 'size for ' + t);
+    });
+    const edge = PF.img.crop(c, 500, 50, 10, 10);
+    near(px(edge, 0, 0), [0, 0, 255], 2, 'nearest edge pixel');
+    let err = null;
+    try { PF.img.crop(mk(0, 0), 0, 0, 5, 5); } catch (e) { err = e; }
+    ok(err instanceof Error && /empty/i.test(err.message), 'empty source throws a plain Error');
+  });
+
+  // ---- loadFile / EXIF ------------------------------------------------------
+  test('fixture check: browser really honours the EXIF tag we build', async function () {
+    const blob = await exifBlob(6);
+    const none = await createImageBitmap(blob, { imageOrientation: 'none' });
+    eq(none.width + 'x' + none.height, '200x100', 'raw size');
+    none.close();
+    const fromImage = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+    eq(fromImage.width + 'x' + fromImage.height, '100x200', 'oriented size');
+    fromImage.close();
+  });
+  test('loadFile: EXIF orientation applied on the ImageBitmap path (1, 3, 6, 8)', async function () {
+    for (const spec of ORIENTATIONS) {
+      const img = await PF.img.loadFile(await exifBlob(spec.o));
+      ok(typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap, 'orientation ' + spec.o + ': expected an ImageBitmap');
+      await checkOrientation(PF.img.toCanvas(img, Infinity), spec, 'bitmap o=' + spec.o);
+      img.close();
+    }
+  });
+  test('loadFile: falls back to <img> when createImageBitmap rejects; EXIF still applied; URL revoked', async function () {
+    const created = [], revoked = [];
+    const origCreate = URL.createObjectURL.bind(URL), origRevoke = URL.revokeObjectURL.bind(URL);
+    URL.createObjectURL = function (b) { const u = origCreate(b); created.push(u); return u; };
+    URL.revokeObjectURL = function (u) { revoked.push(u); return origRevoke(u); };
+    try {
+      await withStub(window, 'createImageBitmap', function () { return Promise.reject(new Error('Safari says no')); }, async function () {
+        for (const spec of ORIENTATIONS) {
+          const img = await PF.img.loadFile(await exifBlob(spec.o));
+          ok(img instanceof HTMLImageElement, 'orientation ' + spec.o + ': expected an <img>');
+          await checkOrientation(PF.img.toCanvas(img, Infinity), spec, 'img o=' + spec.o);
+        }
+      });
+    } finally {
+      URL.createObjectURL = origCreate; URL.revokeObjectURL = origRevoke;
+    }
+    ok(created.length === ORIENTATIONS.length, 'one object URL per load, got ' + created.length);
+    eq(created.slice().sort().join('|'), revoked.slice().sort().join('|'), 'every object URL was revoked');
+  });
+  test('loadFile: falls back when createImageBitmap THROWS synchronously, or is missing', async function () {
+    const blob = await exifBlob(6);
+    await withStub(window, 'createImageBitmap', function () { throw new TypeError('bad options'); }, async function () {
+      const img = await PF.img.loadFile(blob);
+      ok(img instanceof HTMLImageElement, 'sync throw -> <img>');
+      eq(img.naturalWidth + 'x' + img.naturalHeight, '100x200', 'oriented size');
+    });
+    await withStub(window, 'createImageBitmap', undefined, async function () {
+      const img = await PF.img.loadFile(blob);
+      ok(img instanceof HTMLImageElement, 'missing -> <img>');
+    });
+  });
+  test('loadFile: passes imageOrientation from-image to createImageBitmap', async function () {
+    let seen = null;
+    const real = window.createImageBitmap.bind(window);
+    await withStub(window, 'createImageBitmap', function (src, opts) { seen = opts; return real(src, opts); }, async function () {
+      const img = await PF.img.loadFile(await exifBlob(1));
+      if (img.close) img.close();
+    });
+    ok(seen && seen.imageOrientation === 'from-image', 'options: ' + JSON.stringify(seen));
+  });
+  test('loadFile: rejects with a plain Error for missing / non-image input', async function () {
+    await rejects(PF.img.loadFile(null), /no photo/i, 'null');
+    await rejects(PF.img.loadFile(new Blob(['not an image'], { type: 'image/jpeg' })), /could not open that image/i, 'garbage bytes');
+    await rejects(PF.img.loadFile('a string'), /could not open that image/i, 'string');
+  });
+  test('blobToCanvas: applies EXIF orientation and honours maxLongEdge', async function () {
+    for (const spec of ORIENTATIONS) {
+      const c = await PF.img.blobToCanvas(await exifBlob(spec.o));
+      await checkOrientation(c, spec, 'blobToCanvas o=' + spec.o);
+    }
+    const small = await PF.img.blobToCanvas(await exifBlob(6), 100);
+    eq(small.width + 'x' + small.height, '50x100', 'rotated then shrunk');
+  });
+  test('blobToCanvas: closes the ImageBitmap it created', async function () {
+    let closed = 0;
+    const real = window.createImageBitmap.bind(window);
+    await withStub(window, 'createImageBitmap', async function (src, opts) {
+      const bmp = await real(src, opts);
+      const close = bmp.close.bind(bmp);
+      bmp.close = function () { closed++; close(); };
+      return bmp;
+    }, async function () { await PF.img.blobToCanvas(await exifBlob(1)); });
+    eq(closed, 1, 'close() calls');
+  });
+
+  // ---- uuid -----------------------------------------------------------------
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+  test('uuid: v4 format, unique', function () {
+    const seen = new Set();
+    for (let i = 0; i < 500; i++) { const u = PF.img.uuid(); ok(UUID_RE.test(u), 'format: ' + u); seen.add(u); }
+    eq(seen.size, 500, 'unique count');
+  });
+  test('uuid: fallback works without crypto.randomUUID', async function () {
+    await withStub(window.crypto, 'randomUUID', undefined, async function () {
+      const seen = new Set();
+      for (let i = 0; i < 200; i++) { const u = PF.img.uuid(); ok(UUID_RE.test(u), 'format: ' + u); seen.add(u); }
+      eq(seen.size, 200, 'unique count');
+    });
+  });
+  test('uuid: fallback works without any crypto (Math.random)', async function () {
+    await withStub(window, 'crypto', undefined, async function () {
+      const a = PF.img.uuid(), b = PF.img.uuid();
+      ok(UUID_RE.test(a) && UUID_RE.test(b) && a !== b, 'a=' + a + ' b=' + b);
+    });
+  });
+
+  // ---- hooks for the runner -----------------------------------------------
+  window.__names = function () { return tests.map(function (t) { return t.name; }); };
+  window.__run = async function (i) {
+    const t = tests[i];
+    try { await t.fn(); return { name: t.name, ok: true }; }
+    catch (e) { return { name: t.name, ok: false, error: String((e && e.stack) || e) }; }
+  };
+})();
+</script>
+</body>
+</html>
