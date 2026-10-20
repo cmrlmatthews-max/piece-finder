@@ -64,6 +64,7 @@ canvas.fit { width: 100%; height: auto; display: block; border-radius: 10px; bac
 .pill.high { background: var(--ok); color: #000; }
 .pill.medium { background: var(--accent); color: #000; }
 .pill.low { background: #555b68; color: #fff; }
+.pill.cluster { background: #ff9f1c; color: #000; text-transform: none; }
 .rank { display: inline-flex; width: 30px; height: 30px; border-radius: 15px; background: var(--accent); color: #000;
   font-weight: 800; align-items: center; justify-content: center; flex: none; }
 .result { display: flex; gap: 10px; background: var(--card); border-radius: 12px; padding: 10px; margin-bottom: 8px;

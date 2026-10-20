@@ -66,28 +66,32 @@ function errorTexts(x, out = []) {
   return out;
 }
 
-// ------------------------------------------------------------------ what the spec says (typed out here on purpose)
+// ------------------------------------------------------------------ what v0.2 says (typed out here on purpose)
+// These texts are typed in by hand, NOT copied from api.js, so the test is a real check of the wording.
 const KEY = 'sk-ant-api03-TESTKEY-abcdef_123456';
 const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const EM = '—';
 const LIT = {
-  system: 'You help people solve a 1500-piece jigsaw puzzle. You look at photos of loose pieces and an empty spot ' +
-    'and say which pieces might fit. Be concrete and brief.',
-  hole: 'IMAGE: photo of the empty spot in the puzzle, taken from above, with the placed neighboring pieces around it.',
-  poster: 'IMAGE: crop of the finished-puzzle picture (the poster), centered on the empty spot. ' +
-    'The missing piece is at the center of this crop.',
-  sheet: (i, n) => `CANDIDATE SHEET ${i} of ${n}: loose pieces. The number under each piece is its ID.`,
+  system: 'You help people solve a 1500-piece jigsaw puzzle. You look at photos of loose pieces and a marked open spot and say which pieces might fit. Be concrete and brief.',
+  holeFull: 'IMAGE: photo of the puzzle around the open spot to fill, taken from above. The yellow outline marks the open spot. Pieces that touch the outline from outside are placed neighbors. Some sides of the outline may have no neighbor because the puzzle is unfinished there; those sides are free.',
+  holeCrop: 'IMAGE: zoomed view of the same marked spot.',
+  poster: 'IMAGE: crop of the finished-puzzle picture (the poster) around the spot. The yellow ring marks where the missing piece goes.',
+  sheet: (i, n) => `CANDIDATE SHEET ${i} of ${n}: loose single pieces. The number under each piece is its ID.`,
+  cluster: (j, m) => `CLUSTER SHEET ${j} of ${m}: each item is several pieces already joined together (the caption gives the count). A cluster fits only an open area of the same shape and size. The number under each item is its ID.`,
   final: (topN, count) => [
-    `Task: find which candidate pieces could fit the empty spot. Rank the best ${topN} candidates, best first.`,
-    "Judge by: (1) colors and patterns that match the picture at the spot and continue the neighbors' patterns,",
-    "(2) the shape of the hole: which sides need a tab (knob) and which need a blank (socket), (3) the candidate's",
-    `tab/blank layout ${EM} a candidate may be rotated any way. Candidate IDs run 1 to ${count}.`,
-    `Return only plausible candidates (fewer than ${topN} is fine). Give each a one-sentence reason a person can check`,
-    'by eye. Put any general observation in notes (one sentence).',
+    `Task: find which candidates could fit the marked open spot. Rank the best ${topN}, best first.`,
+    "Work in this order. First describe the spot: which sides touch placed neighbors and which sides are open; for each side with a neighbor, whether the spot needs a tab (knob) or a blank (socket) there; the colors and patterns the picture shows at the spot (use the poster crop) and along each neighbor's edge.",
+    "Then judge every candidate against that description: colors and patterns must continue the neighbors; each bounded side must have the matching tab or blank; the candidate may be rotated any way; a cluster must match the open area's size and shape.",
+    `Candidate IDs run 1 to ${count}. Return only plausible candidates (fewer than ${topN} is fine). Give each a one-sentence reason a person can check by eye.`,
   ].join('\n'),
+  spotDescription: 'Description of the marked spot: bounded sides, open sides, tab/blank per bounded side, colors.',
   schema: {
     type: 'object',
     properties: {
+      spot: {
+        type: 'string',
+        description: 'Description of the marked spot: bounded sides, open sides, tab/blank per bounded side, colors.',
+      },
       candidates: {
         type: 'array',
         items: {
@@ -103,12 +107,13 @@ const LIT = {
       },
       notes: { type: 'string' },
     },
-    required: ['candidates', 'notes'],
+    required: ['spot', 'candidates', 'notes'],
     additionalProperties: false,
   },
+  defaultModel: 'claude-sonnet-5-5',
   models: [
-    { id: 'claude-haiku-5-5', label: `Haiku 5.5 ${EM} fast, cheapest` },
-    { id: 'claude-sonnet-5-5', label: `Sonnet 5.5 ${EM} smarter` },
+    { id: 'claude-sonnet-5-5', label: `Sonnet 5.5 ${EM} recommended` },
+    { id: 'claude-haiku-5-5', label: `Haiku 5.5 ${EM} fastest, cheapest` },
     { id: 'claude-opus-5-5', label: `Opus 5.5 ${EM} smartest, costs most` },
   ],
   msg: {
@@ -127,7 +132,8 @@ const LIT = {
   },
 };
 
-// Reads the texts out of SPEC.md (when it exists) so the literals above are checked against the source of truth.
+// SPEC.md is the v0.1 spec. Its prompt texts, schema and model list changed in v0.2 (see NOTES-v02.md), so only the
+// parts that did NOT change are read from it: error messages, endpoint, anthropic-version, max_tokens.
 function parseSpec() {
   const specPath = path.join(root, 'SPEC.md');
   if (!fs.existsSync(specPath)) return null;
@@ -138,13 +144,6 @@ function parseSpec() {
     return m[1];
   };
   return {
-    hole: grab(/^1\. If holeBlob: text `([^`]+)` then the image\./m, 'hole text'),
-    poster: grab(/^2\. If posterBlob: text `([^`]+)` then the image\./m, 'poster text'),
-    sheet: grab(/^3\. For each sheet i: text `([^`]+)` then the image\./m, 'sheet text'),
-    final: grab(/^4\. Final text:\n```\n([\s\S]*?)\n```/m, 'final text'),
-    system: grab(/^SYSTEM: `([^`]+)`/m, 'system text'),
-    schema: JSON.parse(grab(/^SCHEMA:\n```json\n([\s\S]*?)\n```/m, 'schema')),
-    models: [...s.matchAll(/\{ id:\s*'([^']+)',\s*label:\s*'([^']+)'\s*\}/g)].map((m) => ({ id: m[1], label: m[2] })),
     msgKey: grab(/401\/403 → `([^`]+)`/, '401/403 message'),
     msgRate: grab(/429 → `([^`]+)`/, '429 message'),
     msgRejected: grab(/400 → `([^`]+)`/, '400 message'),
@@ -155,6 +154,21 @@ function parseSpec() {
     version: grab(/^anthropic-version: (\S+)/m, 'anthropic-version'),
     endpoint: grab(/`POST (https:\/\/\S+)`/, 'endpoint'),
   };
+}
+
+// Walks a JSON schema and returns a list of problems: every object node must set additionalProperties:false
+// and list every one of its properties as required.
+function schemaProblems(node, where = 'schema', out = []) {
+  if (!node || typeof node !== 'object') return out;
+  if (node.type === 'object') {
+    if (node.additionalProperties !== false) out.push(`${where}: additionalProperties is not false`);
+    const props = Object.keys(node.properties || {});
+    const req = node.required || [];
+    if (!eq([...props].sort(), [...req].sort())) out.push(`${where}: required (${req}) is not all properties (${props})`);
+    for (const k of props) schemaProblems(node.properties[k], `${where}.${k}`, out);
+  }
+  if (node.type === 'array') schemaProblems(node.items, `${where}[]`, out);
+  return out;
 }
 
 const types = (blocks) => blocks.map((b) => b.type).join(',');

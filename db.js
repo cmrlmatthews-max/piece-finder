@@ -12,7 +12,8 @@ window.PF = window.PF || {};
   const DB_VERSION = 1;
   const STORES = ['groups', 'pieces', 'meta'];
   const SETTINGS_KEY = 'pf.settings';
-  const DEFAULT_SETTINGS = { apiKey: '', model: 'claude-haiku-5-5', topN: 8 };
+  // gridCols / gridRows: how many pieces wide / tall the finished puzzle is (whole numbers, 0 = unknown).
+  const DEFAULT_SETTINGS = { apiKey: '', model: 'claude-sonnet-5-5', topN: 8, gridCols: 0, gridRows: 0 };
 
   let dbPromise = null; // cached promise returned by open()
   let dbConn = null; // the connection that promise resolved to
@@ -294,12 +295,22 @@ window.PF = window.PF || {};
     }
   }
 
+  // Reads a puzzle grid size (pieces across or down): a whole number >= 0, where 0 means "unknown".
+  // Numbers and numeric text are accepted (decimals are rounded down); anything else gives the fallback.
+  function gridSize(value, fallback) {
+    const usable = typeof value === 'number' || (typeof value === 'string' && value.trim() !== '');
+    const n = usable ? Number(value) : NaN;
+    return Number.isFinite(n) && n >= 0 ? Math.floor(n) : fallback;
+  }
+
   // Makes sure the known keys have the right types; anything unusable falls back to its default.
   function cleanSettings(s) {
     if (typeof s.apiKey !== 'string') s.apiKey = DEFAULT_SETTINGS.apiKey;
     if (typeof s.model !== 'string' || !s.model) s.model = DEFAULT_SETTINGS.model;
     const n = Number(s.topN);
     s.topN = Number.isFinite(n) && n >= 1 ? Math.floor(n) : DEFAULT_SETTINGS.topN;
+    s.gridCols = gridSize(s.gridCols, DEFAULT_SETTINGS.gridCols);
+    s.gridRows = gridSize(s.gridRows, DEFAULT_SETTINGS.gridRows);
     return s;
   }
 

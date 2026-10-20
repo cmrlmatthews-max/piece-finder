@@ -42,7 +42,7 @@ The repo root holds these files.
 - `segment.js`: finds the loose pieces in a group photo.
 - `sheet.js`: builds contact sheets and draws circles on photos.
 - `api.js`: sends photos to Claude and reads the answer.
-- `poster.js`: the screen where you pick the spot on the poster.
+- `picker.js`: the full-screen screen where you trace the open spot on a photo or put the ring on the poster.
 - `manifest.webmanifest`: the app name, colors, and icons for the Home Screen.
 - `icons/`: the app icons.
 - `tests/`: test scripts and synthetic test photos. Run all tests with `NODE_PATH=<global node_modules> node tests/e2e_app.mjs` (needs Playwright). The piece-detection test is `tests/test_segment.mjs`.
@@ -121,11 +121,13 @@ The app opens full screen. It does not show the Safari address bar.
 > **Caution:** Keep the pieces apart. Touching pieces may merge into one box.
 
 3. Photograph one sorted group of loose pieces from above.
-4. Check that each box covers one piece.
-5. If boxes are wrong, move the **Sensitivity** slider.
-6. Tap a box that does not cover one piece to delete it.
+4. Check the boxes. Yellow is one piece. Orange is a cluster: two or more pieces already joined. Red is removed.
+5. Tap a box to change it: yellow → orange → red → yellow.
+6. If boxes are wrong, move the **Sensitivity** slider.
 7. Type a name in **Group name**.
 8. Tap **Save group**.
+
+Cluster: pieces you already joined to each other. The app keeps a cluster as one candidate for a larger open area.
 
 **Search for a piece**
 
@@ -135,13 +137,21 @@ Photo of the spot:
 
 1. Open the **Find** tab.
 2. Tap **Take photo of the spot**.
-3. Photograph the empty spot.
+3. Photograph the open spot with its neighbors in the frame.
+4. The trace screen opens. Drag your finger in a loop around the open spot.
+5. To pan or zoom first, tap **Move**. Then tap **Draw** to trace.
+6. Tap **Done**.
+
+The app draws a yellow outline on the photo. Claude uses the outline to find the spot. Sides of the outline with no neighbor are free sides.
 
 Spot on the poster:
 
 1. Tap **Pick the spot**.
-2. Tap the empty spot on the poster.
-3. Tap **Use this spot**.
+2. Drag the poster until the ring sits on the spot. Use **4×** or **8×** zoom for precision.
+3. Move the **Spot size** slider to cover about one piece.
+4. Tap **Done**.
+
+Optional: if you know the puzzle layout, enter pieces across × down in **Settings**. The poster then shows a grid.
 
 Search:
 
@@ -151,7 +161,8 @@ Search:
 4. Tap **Placed ✓** when you place a piece in the puzzle.
 5. Tap **Not it** to hide a candidate that does not fit.
 6. Find the circled pieces on the group photos below the list. Tap a photo to see it full screen.
-7. If the search used Haiku, tap **Search again with Sonnet**.
+7. Read **What Claude saw at the spot**. If it is wrong, trace the spot again.
+8. To try a smarter model, tap **Search again with Opus** (or **Sonnet** after a Haiku search).
 
 ## Photo tips
 
@@ -167,15 +178,17 @@ Search:
 
 Token: a small unit of text. Claude counts tokens to set the price.
 
-Model: the Claude version that reads your photos. Haiku 5.5 is the default. Sonnet 5.5 is smarter and costs more.
+Model: the Claude version that reads your photos. Sonnet 5.5 is the default. Haiku 5.5 is cheaper. Opus 5.5 is smarter and costs more.
 
 Choose a model in **Settings**, under **Model**.
 
-One search sends about 5–7 images to Claude. The images are the spot photo, the poster crop around the spot, and the contact sheets.
+One search sends about 5–8 images to Claude. The images are the marked spot photo, a zoomed crop of it, the poster crop, and the contact sheets.
 
 With Haiku 5.5, a search costs well under one cent.
 
 With Sonnet 5.5, a search costs a few cents.
+
+With Opus 5.5, a search costs about ten cents.
 
 The app shows token usage after each search.
 

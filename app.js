@@ -5,7 +5,7 @@ window.PF = window.PF || {};
 PF.app = (function () {
   'use strict';
 
-  const VERSION = 'v0.1';
+  const VERSION = 'v0.2';
   const MAX_PHOTO = 1600;     // long edge for group photos and spot photos
   const MAX_POSTER = 2400;    // long edge for the stored poster
 
@@ -133,6 +133,9 @@ PF.app = (function () {
       PF.api.MODELS.map((m) => h('option', { value: m.id, selected: m.id === s.model }, m.label)));
     const topN = h('input', { type: 'number', min: '5', max: '12', step: '1', value: String(s.topN || 8),
       onchange: (e) => { const v = Math.min(12, Math.max(5, parseInt(e.target.value, 10) || 8)); e.target.value = v; PF.settings.set({ topN: v }); } });
+    const gridInput = (key) => h('input', { type: 'number', min: '0', max: '200', step: '1', inputmode: 'numeric', placeholder: '0', value: s[key] ? String(s[key]) : '',
+      onchange: (e) => { const v = Math.max(0, parseInt(e.target.value, 10) || 0); e.target.value = v || ''; PF.settings.set({ [key]: v }); } });
+    const gridCols = gridInput('gridCols'), gridRows = gridInput('gridRows');
     const testBtn = h('button', { type: 'button', class: 'btn', onclick: async () => {
       PF.settings.set({ apiKey: key.value });
       testBtn.disabled = true; setStatus('Testing the key…', true);
@@ -154,6 +157,8 @@ PF.app = (function () {
         h('label', { class: 'field' }, h('span', {}, 'Claude API key'), h('div', { class: 'row' }, h('div', { style: { flex: '1' } }, key), show)),
         h('label', { class: 'field' }, h('span', {}, 'Model'), model),
         h('label', { class: 'field' }, h('span', {}, 'Candidates to show (5–12)'), topN),
+        h('div', { class: 'field' }, h('span', {}, 'Puzzle layout, pieces across × down (optional, draws a grid on the poster)'),
+          h('div', { class: 'row' }, h('div', { style: { flex: '1' } }, gridCols), h('span', { class: 'muted' }, '×'), h('div', { style: { flex: '1' } }, gridRows))),
         h('div', { class: 'row' }, testBtn),
         h('div', { id: 'status', class: 'status' }),
         h('p', { class: 'muted small' }, 'Keys are stored only on this phone.')),

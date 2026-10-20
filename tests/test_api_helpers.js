@@ -2,9 +2,19 @@
 window.A = (function () {
   const A = { calls: [], onCall: null };
 
-  // The reply text used by the spec's fake response: candidate 3 twice (the second one is a repeat) and 99.
-  A.GOOD_TEXT = '{"candidates":[{"number":3,"confidence":"high","reason":"x"},' +
+  // The reply text used by the fake response: a spot description, then candidate 3 twice (the second one is a
+  // repeat) and 99 (out of range), then a note. The keys come in the same order as in the real schema.
+  A.GOOD_TEXT = '{"spot":"sp","candidates":[{"number":3,"confidence":"high","reason":"x"},' +
     '{"number":3,"confidence":"low","reason":"dup"},{"number":99,"confidence":"low","reason":"out of range"}],"notes":"n"}';
+
+  // Reads a Blob as base64 (no "data:" prefix) the plain way, so a test can tell which picture went into which block.
+  A.b64 = function (blob) {
+    return new Promise((resolve) => {
+      const r = new FileReader();
+      r.onload = () => resolve(String(r.result).split(',')[1]);
+      r.readAsDataURL(blob);
+    });
+  };
 
   // Makes a small solid-color JPEG Blob.
   A.jpeg = function (color, w, h) {

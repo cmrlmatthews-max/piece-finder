@@ -7,30 +7,40 @@ window.PF = window.PF || {};
 
   const ENDPOINT = 'https://api.anthropic.com/v1/messages';
   const API_VERSION = '2023-06-01';
-  const DEFAULT_MODEL = 'claude-haiku-5-5';
+  const DEFAULT_MODEL = 'claude-sonnet-5-5';
   const DEFAULT_TOP_N = 8;
   const MAX_TOKENS = 2048;
   const TIMEOUT_MS = 120000;   // give up after 2 minutes
 
-  // Note: \u2014 is the em dash used in the spec texts (kept as an escape so file encoding never matters).
+  // The model list shown in Settings; the first one is the recommended one (it is also DEFAULT_MODEL).
+  // Note: \u2014 is the em dash used in the labels (kept as an escape so file encoding never matters).
   const MODELS = [
-    { id: 'claude-haiku-5-5', label: 'Haiku 5.5 \u2014 fast, cheapest' },
-    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 \u2014 smarter' },
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5 \u2014 recommended' },
+    { id: 'claude-haiku-5-5', label: 'Haiku 5.5 \u2014 fastest, cheapest' },
     { id: 'claude-opus-5-5', label: 'Opus 5.5 \u2014 smartest, costs most' },
   ];
 
   const SYSTEM = 'You help people solve a 1500-piece jigsaw puzzle. You look at photos of loose pieces ' +
-    'and an empty spot and say which pieces might fit. Be concrete and brief.';
+    'and a marked open spot and say which pieces might fit. Be concrete and brief.';
 
-  const HOLE_TEXT = 'IMAGE: photo of the empty spot in the puzzle, taken from above, ' +
-    'with the placed neighboring pieces around it.';
+  const HOLE_FULL_TEXT = 'IMAGE: photo of the puzzle around the open spot to fill, taken from above. ' +
+    'The yellow outline marks the open spot. Pieces that touch the outline from outside are placed neighbors. ' +
+    'Some sides of the outline may have no neighbor because the puzzle is unfinished there; those sides are free.';
 
-  const POSTER_TEXT = 'IMAGE: crop of the finished-puzzle picture (the poster), centered on the empty spot. ' +
-    'The missing piece is at the center of this crop.';
+  const HOLE_CROP_TEXT = 'IMAGE: zoomed view of the same marked spot.';
 
+  const POSTER_TEXT = 'IMAGE: crop of the finished-puzzle picture (the poster) around the spot. ' +
+    'The yellow ring marks where the missing piece goes.';
+
+  // Property order matters: Claude writes the keys in this order, so it describes the spot (spot) before it
+  // ranks anything (candidates), and gives its general remark last (notes).
   const SCHEMA = {
     type: 'object',
     properties: {
+      spot: {
+        type: 'string',
+        description: 'Description of the marked spot: bounded sides, open sides, tab/blank per bounded side, colors.',
+      },
       candidates: {
         type: 'array',
         items: {
@@ -46,7 +56,7 @@ window.PF = window.PF || {};
       },
       notes: { type: 'string' },
     },
-    required: ['candidates', 'notes'],
+    required: ['spot', 'candidates', 'notes'],
     additionalProperties: false,
   };
 
@@ -67,20 +77,30 @@ window.PF = window.PF || {};
   // prompt texts
   // ---------------------------------------------------------------------------
 
-  // Text that comes before sheet number i (0-based) of n.
+  // Text that comes before single-piece sheet i (0-based) of n.
   function sheetText(i, n) {
-    return 'CANDIDATE SHEET ' + (i + 1) + ' of ' + n + ': loose pieces. The number under each piece is its ID.';
+    return 'CANDIDATE SHEET ' + (i + 1) + ' of ' + n + ': loose single pieces. The number under each piece is its ID.';
   }
 
-  // The final instruction text. The line breaks are part of the text.
+  // Text that comes before cluster sheet j (0-based) of m (items made of several joined pieces).
+  function clusterSheetText(j, m) {
+    return 'CLUSTER SHEET ' + (j + 1) + ' of ' + m + ': each item is several pieces already joined together ' +
+      '(the caption gives the count). A cluster fits only an open area of the same shape and size. ' +
+      'The number under each item is its ID.';
+  }
+
+  // The final instruction text: four lines (the line breaks are part of the text).
   function taskText(topN, candidateCount) {
     return [
-      'Task: find which candidate pieces could fit the empty spot. Rank the best ' + topN + ' candidates, best first.',
-      "Judge by: (1) colors and patterns that match the picture at the spot and continue the neighbors' patterns,",
-      "(2) the shape of the hole: which sides need a tab (knob) and which need a blank (socket), (3) the candidate's",
-      'tab/blank layout \u2014 a candidate may be rotated any way. Candidate IDs run 1 to ' + candidateCount + '.',
-      'Return only plausible candidates (fewer than ' + topN + ' is fine). Give each a one-sentence reason a person can check',
-      'by eye. Put any general observation in notes (one sentence).',
+      'Task: find which candidates could fit the marked open spot. Rank the best ' + topN + ', best first.',
+      'Work in this order. First describe the spot: which sides touch placed neighbors and which sides are open; ' +
+        'for each side with a neighbor, whether the spot needs a tab (knob) or a blank (socket) there; ' +
+        "the colors and patterns the picture shows at the spot (use the poster crop) and along each neighbor's edge.",
+      'Then judge every candidate against that description: colors and patterns must continue the neighbors; ' +
+        'each bounded side must have the matching tab or blank; the candidate may be rotated any way; ' +
+        "a cluster must match the open area's size and shape.",
+      'Candidate IDs run 1 to ' + candidateCount + '. Return only plausible candidates (fewer than ' + topN +
+        ' is fine). Give each a one-sentence reason a person can check by eye.',
     ].join('\n');
   }
 
@@ -146,13 +166,19 @@ window.PF = window.PF || {};
     };
   }
 
-  // Builds the content blocks in the required order: spot photo, poster crop, sheets, final task text.
-  async function buildContent(p, sheets, topN, count) {
+  // Builds the content blocks in the required order, each image preceded by its own text:
+  // full spot photo, zoomed spot photo, poster crop, single-piece sheets, cluster sheets, final task text.
+  // Pictures that are missing are left out.
+  async function buildContent(p, singles, clusters, topN, count) {
     const blocks = [];
-    if (p.holeBlob) blocks.push(textBlock(HOLE_TEXT), await imageBlock(p.holeBlob));
+    if (p.holeFullBlob) blocks.push(textBlock(HOLE_FULL_TEXT), await imageBlock(p.holeFullBlob));
+    if (p.holeCropBlob) blocks.push(textBlock(HOLE_CROP_TEXT), await imageBlock(p.holeCropBlob));
     if (p.posterBlob) blocks.push(textBlock(POSTER_TEXT), await imageBlock(p.posterBlob));
-    for (let i = 0; i < sheets.length; i++) {
-      blocks.push(textBlock(sheetText(i, sheets.length)), await imageBlock(sheets[i]));
+    for (let i = 0; i < singles.length; i++) {
+      blocks.push(textBlock(sheetText(i, singles.length)), await imageBlock(singles[i]));
+    }
+    for (let j = 0; j < clusters.length; j++) {
+      blocks.push(textBlock(clusterSheetText(j, clusters.length)), await imageBlock(clusters[j]));
     }
     blocks.push(textBlock(taskText(topN, count)));
     return blocks;
@@ -278,27 +304,32 @@ window.PF = window.PF || {};
   // public functions
   // ---------------------------------------------------------------------------
 
-  // Asks Claude which loose pieces could fit the empty spot.
-  // Resolves to { candidates: [{number, confidence, reason}], notes, usage }.
+  // Asks Claude which loose pieces (and joined clusters) could fit the marked open spot.
+  // params: { apiKey, model, topN, holeFullBlob, holeCropBlob, posterBlob, sheetBlobs, clusterSheetBlobs, candidateCount }
+  //   All pictures are optional, but at least one of holeFullBlob / holeCropBlob / posterBlob is needed,
+  //   and sheetBlobs + clusterSheetBlobs together need at least one sheet.
+  // Resolves to { spot, candidates: [{number, confidence, reason}], notes, usage }.
   async function rankPieces(params) {
     const p = params || {};
     const key = cleanKey(p.apiKey);
-    const sheets = asArray(p.sheetBlobs);
+    const singles = asArray(p.sheetBlobs);
+    const clusters = asArray(p.clusterSheetBlobs);
     const count = toInt(p.candidateCount);
     const topN = toInt(p.topN) >= 1 ? toInt(p.topN) : DEFAULT_TOP_N;
-    if (!p.holeBlob && !p.posterBlob) throw new Error(MSG.noSpot);
-    if (!sheets.length || !(count >= 1)) throw new Error(MSG.noPieces);
+    if (!p.holeFullBlob && !p.holeCropBlob && !p.posterBlob) throw new Error(MSG.noSpot);
+    if (!(singles.length + clusters.length) || !(count >= 1)) throw new Error(MSG.noPieces);
 
     const body = {
       model: p.model || DEFAULT_MODEL,
       max_tokens: MAX_TOKENS,
       system: SYSTEM,
-      messages: [{ role: 'user', content: await buildContent(p, sheets, topN, count) }],
+      messages: [{ role: 'user', content: await buildContent(p, singles, clusters, topN, count) }],
       output_config: { format: { type: 'json_schema', schema: SCHEMA } },
     };
     const data = await post(key, body);
     const answer = parseAnswer(data);
     return {
+      spot: typeof answer.spot === 'string' ? answer.spot : '',
       candidates: cleanCandidates(answer.candidates, count, topN),
       notes: typeof answer.notes === 'string' ? answer.notes : '',
       usage: data.usage || null,
@@ -317,5 +348,5 @@ window.PF = window.PF || {};
     return true;
   }
 
-  PF.api = { rankPieces, testKey, MODELS };
+  PF.api = { rankPieces, testKey, MODELS, DEFAULT_MODEL };
 })();

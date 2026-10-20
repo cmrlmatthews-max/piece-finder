@@ -50,6 +50,21 @@ window.PF = window.PF || {};
     return best;
   }
 
+  // Guesses which detections are clusters (several pieces already joined): area >= 1.7x the median piece area.
+  // Returns { kinds: ['single'|'cluster'...], counts: [1, 3, ...] }.
+  function classify(det) {
+    const areas = det.pieces.map((p) => p.area).filter((a) => a > 0).sort((a, b) => a - b);
+    const med = areas.length ? areas[Math.floor(areas.length / 2)] : 0;
+    const kinds = [], counts = [];
+    det.pieces.forEach((p) => {
+      const ratio = med ? p.area / med : 1;
+      const cluster = ratio >= 1.7;
+      kinds.push(cluster ? 'cluster' : 'single');
+      counts.push(cluster ? Math.max(2, Math.round(ratio)) : 1);
+    });
+    return { kinds, counts };
+  }
+
   // Starts Add group / Re-photograph: take a photo, detect pieces, open the review screen.
   async function startCapture(replaceGroupId, name) {
     const file = await A.pickPhoto();
@@ -59,7 +74,7 @@ window.PF = window.PF || {};
       const canvas = await A.loadPhoto(file, A.MAX_PHOTO);
       const det = PF.segment.detect(canvas, { thresholdScale: 1 });
       const groups = await PF.db.all('groups');
-      state.review = { canvas, det, removed: new Set(), thresholdScale: 1, replaceGroupId: replaceGroupId || null,
+      state.review = { canvas, det, ...classify(det), thresholdScale: 1, replaceGroupId: replaceGroupId || null,
         name: name || `Group ${groups.length + 1}` };
       state.tab = 'pieces';
       A.render();
@@ -69,16 +84,18 @@ window.PF = window.PF || {};
   // Saves the reviewed detection as a group with its pieces.
   async function saveReview() {
     const r = state.review;
-    const kept = r.det.pieces.filter((p, i) => !r.removed.has(i));
+    const kept = r.det.pieces.map((p, i) => ({ p, i })).filter(({ i }) => r.kinds[i] !== 'removed');
     if (!kept.length) { toast('No pieces to save', 'error'); return; }
     try {
       setStatus('Saving pieces…', true);
       const groupId = r.replaceGroupId || PF.img.uuid();
       const now = Date.now();
       const pieces = [];
-      for (const p of kept) {
-        const thumb = await PF.img.canvasToBlob(PF.img.crop(r.canvas, p.x, p.y, p.w, p.h, 320), 'image/jpeg', 0.85);
-        pieces.push({ id: PF.img.uuid(), groupId, bbox: { x: p.x, y: p.y, w: p.w, h: p.h }, thumb, status: 'loose', createdAt: now, placedAt: null });
+      for (const { p, i } of kept) {
+        const cluster = r.kinds[i] === 'cluster';
+        const thumb = await PF.img.canvasToBlob(PF.img.crop(r.canvas, p.x, p.y, p.w, p.h, cluster ? 640 : 320), 'image/jpeg', 0.85);
+        pieces.push({ id: PF.img.uuid(), groupId, bbox: { x: p.x, y: p.y, w: p.w, h: p.h }, thumb, status: 'loose', createdAt: now, placedAt: null,
+          kind: cluster ? 'cluster' : 'single', count: cluster ? r.counts[i] : 1 });
       }
       const photo = await PF.img.canvasToBlob(r.canvas, 'image/jpeg', 0.85);
       const thumb = await PF.img.canvasToBlob(PF.img.toCanvas(r.canvas, 300), 'image/jpeg', 0.8);
@@ -97,34 +114,37 @@ window.PF = window.PF || {};
     const r = state.review;
     const canvas = h('canvas', { class: 'fit' });
     const count = h('p', { class: 'status' });
-    const boxesOf = () => r.det.pieces.map((p, i) => ({ x: p.x, y: p.y, w: p.w, h: p.h, label: String(i + 1),
-      color: r.removed.has(i) ? '#ff5a5a' : (p.merged ? '#ff9f1c' : '#ffd400') }));
+    const COLORS = { single: '#ffd400', cluster: '#ff9f1c', removed: '#ff5a5a' };
+    const boxesOf = () => r.det.pieces.map((p, i) => ({ x: p.x, y: p.y, w: p.w, h: p.h, color: COLORS[r.kinds[i]],
+      label: String(i + 1) + (r.kinds[i] === 'cluster' ? ` ~${r.counts[i]}` : '') + (r.kinds[i] === 'removed' ? ' ✕' : '') }));
     const redraw = () => {
       const drawn = drawBoxes(r.canvas, boxesOf());
       canvas.width = drawn.width; canvas.height = drawn.height;
       canvas.getContext('2d').drawImage(drawn, 0, 0);
-      const kept = r.det.pieces.length - r.removed.size;
-      const merged = r.det.pieces.filter((p, i) => p.merged && !r.removed.has(i)).length;
-      count.textContent = `${kept} pieces found` + (merged ? ` · ${merged} orange box${merged > 1 ? 'es' : ''} may be two pieces touching` : '');
+      const singles = r.kinds.filter((k) => k === 'single').length;
+      const clusters = r.kinds.filter((k) => k === 'cluster').length;
+      count.textContent = `${singles + clusters} pieces found` + (clusters ? ` · ${clusters} cluster${clusters > 1 ? 's' : ''} (orange)` : '');
     };
     canvas.addEventListener('click', (e) => {
       const i = hit(r.det.pieces, tapPoint(canvas, e));
       if (i < 0) return;
-      if (r.removed.has(i)) r.removed.delete(i); else r.removed.add(i);
+      const next = { single: 'cluster', cluster: 'removed', removed: 'single' };
+      r.kinds[i] = next[r.kinds[i]];
+      if (r.kinds[i] === 'cluster' && r.counts[i] < 2) r.counts[i] = 2;
       redraw();
     });
     let timer = 0;
     const slider = h('input', { type: 'range', min: '0.5', max: '1.5', step: '0.05', value: String(r.thresholdScale), oninput: (e) => {
       r.thresholdScale = parseFloat(e.target.value);
       clearTimeout(timer);
-      timer = setTimeout(() => { r.det = PF.segment.detect(r.canvas, { thresholdScale: r.thresholdScale }); r.removed = new Set(); redraw(); }, 150);
+      timer = setTimeout(() => { r.det = PF.segment.detect(r.canvas, { thresholdScale: r.thresholdScale }); Object.assign(r, classify(r.det)); redraw(); }, 150);
     } });
     const name = h('input', { type: 'text', value: r.name, placeholder: 'Group name', onchange: (e) => { r.name = e.target.value; } });
     redraw();
     return h('div', {},
       h('h1', {}, r.replaceGroupId ? 'Re-photograph group' : 'New group'),
       h('div', { class: 'card' }, canvas, count,
-        h('p', { class: 'muted small' }, 'Tap a box to remove it (red = removed). Orange may be two pieces touching: retake if so.'),
+        h('p', { class: 'muted small' }, 'Yellow = one piece. Orange = cluster of joined pieces (~count). Red = removed. Tap a box to change it. If two loose pieces touch, separate them and retake.'),
         h('label', { class: 'field' }, h('span', {}, 'Sensitivity'), slider),
         h('label', { class: 'field' }, h('span', {}, 'Group name'), name),
         h('div', { id: 'status', class: 'status' }),
@@ -141,7 +161,8 @@ window.PF = window.PF || {};
     const pieces = await PF.db.byIndex('pieces', 'groupId', group.id);
     const photo = await PF.img.blobToCanvas(group.photo);
     const marked = PF.sheet.drawMarks(photo, pieces.filter((p) => p.status === 'placed').map((p) => ({ bbox: p.bbox, label: '', kind: 'placed' })));
-    const drawn = drawBoxes(marked, pieces.filter((p) => p.status !== 'placed').map((p) => ({ ...p.bbox, color: 'rgba(255,212,0,0.8)' })));
+    const drawn = drawBoxes(marked, pieces.filter((p) => p.status !== 'placed').map((p) => ({ ...p.bbox,
+      color: p.kind === 'cluster' ? 'rgba(255,159,28,0.9)' : 'rgba(255,212,0,0.8)', label: p.kind === 'cluster' ? `~${p.count || 2}` : '' })));
     const canvas = h('canvas', { class: 'fit', width: drawn.width, height: drawn.height });
     canvas.getContext('2d').drawImage(drawn, 0, 0);
     canvas.addEventListener('click', async (e) => {
@@ -155,12 +176,13 @@ window.PF = window.PF || {};
       A.render();
     });
     const loose = pieces.filter((p) => p.status !== 'placed').length;
+    const clusters = pieces.filter((p) => p.status !== 'placed' && p.kind === 'cluster').length;
     return h('div', {},
       h('button', { type: 'button', class: 'link', onclick: () => { state.groupDetailId = null; A.render(); } }, '← All groups'),
       h('label', { class: 'field' }, h('span', {}, 'Group name'),
         h('input', { type: 'text', value: group.name, onchange: async (e) => { group.name = e.target.value.trim() || group.name; await PF.db.put('groups', group); toast('Renamed', 'ok'); } })),
       h('div', { class: 'card' }, canvas,
-        h('p', { class: 'status' }, `${loose} loose · ${pieces.length - loose} placed`),
+        h('p', { class: 'status' }, `${loose} loose · ${pieces.length - loose} placed` + (clusters ? ` · ${clusters} cluster${clusters > 1 ? 's' : ''}` : '')),
         h('p', { class: 'muted small' }, 'Tap a piece to mark it placed, or tap a placed piece to bring it back.'),
         h('div', { id: 'status', class: 'status' }),
         h('div', { class: 'row' },

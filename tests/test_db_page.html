@@ -314,19 +314,22 @@
   // ==== PF.settings ==========================================================
   const KEY = 'pf.settings';
   function resetSettings() { localStorage.removeItem(KEY); PF.settings.set({}); localStorage.removeItem(KEY); }
+  // The defaults (v0.2: Sonnet, plus the puzzle grid size, 0 = unknown). dflt({ topN: 5 }) = defaults with some values changed.
+  const DEFAULTS = { apiKey: '', model: 'claude-sonnet-5-5', topN: 8, gridCols: 0, gridRows: 0 };
+  function dflt(over) { return Object.assign({}, DEFAULTS, over || {}); }
   test('settings: defaults when nothing is saved', function () {
     resetSettings();
-    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 });
+    same(PF.settings.get(), DEFAULTS);
     eq(localStorage.getItem(KEY), null, 'get() does not write');
   });
   test('settings: set merges over defaults, saves JSON under pf.settings, returns the new settings', function () {
     resetSettings();
     const r1 = PF.settings.set({ apiKey: 'sk-ant-test' });
-    same(r1, { apiKey: 'sk-ant-test', model: 'claude-haiku-5-5', topN: 8 }, 'returned');
+    same(r1, dflt({ apiKey: 'sk-ant-test' }), 'returned');
     same(PF.settings.get(), r1, 'get matches');
     same(JSON.parse(localStorage.getItem(KEY)), r1, 'localStorage JSON');
-    const r2 = PF.settings.set({ topN: 11, model: 'claude-sonnet-5-5' });
-    same(r2, { apiKey: 'sk-ant-test', model: 'claude-sonnet-5-5', topN: 11 }, 'second merge keeps earlier keys');
+    const r2 = PF.settings.set({ topN: 11, model: 'claude-opus-5-5' });
+    same(r2, dflt({ apiKey: 'sk-ant-test', model: 'claude-opus-5-5', topN: 11 }), 'second merge keeps earlier keys');
     const r3 = PF.settings.set({});
     same(r3, r2, 'empty partial changes nothing');
     same(PF.settings.set(), r2, 'no argument changes nothing');
@@ -335,7 +338,7 @@
   test('settings: values saved by an older/other page are merged over defaults', function () {
     resetSettings();
     localStorage.setItem(KEY, JSON.stringify({ apiKey: 'abc' }));
-    same(PF.settings.get(), { apiKey: 'abc', model: 'claude-haiku-5-5', topN: 8 });
+    same(PF.settings.get(), dflt({ apiKey: 'abc' }));
     localStorage.setItem(KEY, JSON.stringify({ topN: 6, extra: 'kept' }));
     const s = PF.settings.get();
     eq(s.topN, 6); eq(s.apiKey, ''); eq(s.extra, 'kept', 'unknown keys survive');
@@ -343,37 +346,83 @@
     eq(JSON.parse(localStorage.getItem(KEY)).extra, 'kept', 'unknown keys survive a set()');
   });
   test('settings: corrupt or wrong-shaped JSON gives defaults and never throws', function () {
-    const defaults = { apiKey: '', model: 'claude-haiku-5-5', topN: 8 };
+    const defaults = DEFAULTS;
     ['{not json', '', 'null', '[1,2,3]', '"a string"', '42', 'true'].forEach(function (bad) {
       localStorage.setItem(KEY, bad);
       same(PF.settings.get(), defaults, 'stored: ' + bad);
     });
     localStorage.setItem(KEY, '{broken');
-    same(PF.settings.set({ topN: 5 }), { apiKey: '', model: 'claude-haiku-5-5', topN: 5 }, 'set() over corrupt data');
+    same(PF.settings.set({ topN: 5 }), dflt({ topN: 5 }), 'set() over corrupt data');
   });
   test('settings: get() returns a fresh object each time', function () {
     resetSettings();
     const a = PF.settings.get(); a.apiKey = 'mutated'; a.topN = 99;
-    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 }, 'mutating a result does not leak');
+    same(PF.settings.get(), DEFAULTS, 'mutating a result does not leak');
     ok(PF.settings.get() !== PF.settings.get(), 'new object per call');
   });
   test('settings: undefined values are ignored, apiKey is trimmed', function () {
     resetSettings();
     PF.settings.set({ apiKey: 'k1', model: 'claude-opus-5-5', topN: 9 });
     const r = PF.settings.set({ apiKey: undefined, model: undefined, topN: undefined });
-    same(r, { apiKey: 'k1', model: 'claude-opus-5-5', topN: 9 }, 'undefined does not wipe saved values');
+    same(r, dflt({ apiKey: 'k1', model: 'claude-opus-5-5', topN: 9 }), 'undefined does not wipe saved values');
     eq(PF.settings.set({ apiKey: '  sk-ant-xyz \n' }).apiKey, 'sk-ant-xyz', 'trimmed');
     eq(PF.settings.set({ apiKey: '' }).apiKey, '', 'can be cleared');
   });
   test('settings: wrong types fall back to defaults; topN accepts numeric text', function () {
     resetSettings();
     localStorage.setItem(KEY, JSON.stringify({ apiKey: 123, model: null, topN: 'lots' }));
-    same(PF.settings.get(), { apiKey: '', model: 'claude-haiku-5-5', topN: 8 }, 'read side');
+    same(PF.settings.get(), DEFAULTS, 'read side');
     eq(PF.settings.set({ topN: '10' }).topN, 10, 'numeric text becomes a number');
     eq(typeof PF.settings.get().topN, 'number', 'number type');
     eq(PF.settings.set({ topN: 7.9 }).topN, 7, 'whole number');
     eq(PF.settings.set({ topN: 0 }).topN, 8, 'zero is not valid');
-    eq(PF.settings.set({ model: '' }).model, 'claude-haiku-5-5', 'empty model is not valid');
+    eq(PF.settings.set({ model: '' }).model, 'claude-sonnet-5-5', 'empty model is not valid');
+  });
+  test('settings v0.2: default model is Sonnet 5.5; gridCols and gridRows default to 0 (unknown)', function () {
+    resetSettings();
+    const s = PF.settings.get();
+    eq(s.model, 'claude-sonnet-5-5', 'model');
+    eq(s.topN, 8, 'topN');
+    eq(s.gridCols, 0, 'gridCols'); eq(s.gridRows, 0, 'gridRows');
+    same(Object.keys(s).sort(), ['apiKey', 'gridCols', 'gridRows', 'model', 'topN'], 'exactly the five known keys');
+  });
+  test('settings v0.2: gridCols / gridRows are saved, merged, and kept as whole numbers', function () {
+    resetSettings();
+    const r = PF.settings.set({ gridCols: 50, gridRows: 30 });
+    same(r, dflt({ gridCols: 50, gridRows: 30 }), 'returned');
+    same(JSON.parse(localStorage.getItem(KEY)), r, 'saved as JSON');
+    same(PF.settings.set({ topN: 6 }), dflt({ gridCols: 50, gridRows: 30, topN: 6 }), 'later set() keeps them');
+    same(PF.settings.set({ gridCols: undefined, gridRows: undefined }), dflt({ gridCols: 50, gridRows: 30, topN: 6 }), 'undefined is ignored');
+    eq(PF.settings.set({ gridCols: 0 }).gridCols, 0, 'can be set back to 0 (unknown)');
+    eq(PF.settings.set({ gridRows: '24' }).gridRows, 24, 'numeric text becomes a number');
+    eq(typeof PF.settings.get().gridRows, 'number', 'number type');
+    eq(PF.settings.set({ gridCols: 37.9 }).gridCols, 37, 'rounded down to a whole number');
+    eq(PF.settings.set({ gridCols: ' 12 ' }).gridCols, 12, 'padded numeric text');
+  });
+  test('settings v0.2: wrongly typed or impossible grid sizes are reset to 0, and the other keys are left alone', function () {
+    resetSettings();
+    PF.settings.set({ apiKey: 'kk', topN: 9 });
+    const bad = ['wide', '', '  ', null, true, false, [], [3], {}, -1, -0.5, '-4', '4x', '0x10 apples'];
+    bad.forEach(function (v) {
+      localStorage.setItem(KEY, JSON.stringify({ apiKey: 'kk', topN: 9, gridCols: v, gridRows: v }));
+      const s = PF.settings.get();
+      eq(s.gridCols, 0, 'gridCols stored as ' + JSON.stringify(v));
+      eq(s.gridRows, 0, 'gridRows stored as ' + JSON.stringify(v));
+      eq(s.apiKey, 'kk', 'apiKey kept'); eq(s.topN, 9, 'topN kept');
+    });
+    const viaSet = PF.settings.set({ gridCols: 'wide', gridRows: -3 });
+    eq(viaSet.gridCols, 0, 'set() with text'); eq(viaSet.gridRows, 0, 'set() with a negative number');
+    eq(JSON.parse(localStorage.getItem(KEY)).gridCols, 0, 'the cleaned value is what gets saved');
+    // JSON cannot hold NaN / Infinity, so these two are only reachable through set().
+    [NaN, Infinity, -Infinity].forEach(function (v) {
+      const r = PF.settings.set({ gridCols: v, gridRows: v });
+      eq(r.gridCols, 0, 'set() with ' + v); eq(r.gridRows, 0, 'set() with ' + v);
+    });
+  });
+  test('settings v0.2: settings saved before v0.2 (no grid keys) get 0 and keep their saved model', function () {
+    resetSettings();
+    localStorage.setItem(KEY, JSON.stringify({ apiKey: 'old', model: 'claude-haiku-5-5', topN: 7 }));
+    same(PF.settings.get(), dflt({ apiKey: 'old', model: 'claude-haiku-5-5', topN: 7 }), 'a saved model is not replaced by the new default');
   });
   test('settings: keeps working for the session when localStorage refuses to save or read', function () {
     resetSettings();
@@ -382,7 +431,7 @@
     Object.defineProperty(proto, 'setItem', { value: function () { throw new DOMException('quota', 'QuotaExceededError'); }, configurable: true, writable: true });
     try {
       const r = PF.settings.set({ apiKey: 'in-memory', topN: 12 });
-      same(r, { apiKey: 'in-memory', model: 'claude-haiku-5-5', topN: 12 }, 'set() still returns the new settings');
+      same(r, dflt({ apiKey: 'in-memory', topN: 12 }), 'set() still returns the new settings');
       same(PF.settings.get(), r, 'get() sees them');
       Object.defineProperty(proto, 'getItem', { value: function () { throw new DOMException('blocked', 'SecurityError'); }, configurable: true, writable: true });
       same(PF.settings.get(), r, 'get() still works when getItem throws');
@@ -392,7 +441,7 @@
     }
     // storage is back: the next save goes to localStorage again
     const r2 = PF.settings.set({ topN: 6 });
-    same(r2, { apiKey: 'in-memory', model: 'claude-haiku-5-5', topN: 6 }, 'merge continues from memory copy');
+    same(r2, dflt({ apiKey: 'in-memory', topN: 6 }), 'merge continues from memory copy');
     same(JSON.parse(localStorage.getItem(KEY)), r2, 'saved to localStorage again');
     resetSettings();
   });

@@ -13,6 +13,16 @@ window.PF = window.PF || {};
   const NUMBER_PX = 34;    // number font size
   const FONT_FAMILY = '-apple-system, Helvetica, Arial, sans-serif';
 
+  // ---- captions (v0.2) ----
+  // A sheet where at least one entry has a caption gets a taller strip in EVERY cell:
+  // the number on the first line, the caption centered under it.
+  const STRIP_H_CAPTION = 72;
+  const NUMBER_CENTER = 22;     // centre of the number's ink, measured down from the top of the strip (both strip heights)
+  const CAPTION_PX = 22;        // caption font size (normal weight)
+  const CAPTION_MIN_PX = 12;    // a caption too wide for its cell shrinks down to this size, then is squeezed
+  const CAPTION_CENTER = 53;    // centre of the caption's capital letters, measured down from the top of the strip
+  const CAPTION_COLOR = '#333333';
+
   // ---- mark look ----
   const YELLOW = '#ffd400';
   const DARK = '#111111';
@@ -83,13 +93,19 @@ window.PF = window.PF || {};
   // contact sheets
   // ---------------------------------------------------------------------------
 
+  // Returns the caption of a sheet entry, trimmed, or '' when it has none. Only a non-empty string counts.
+  function captionOf(entry) {
+    return entry && typeof entry.caption === 'string' ? entry.caption.trim() : '';
+  }
+
   // Draws the piece "contain"-fitted and centered in the piece area of the cell at (x, y).
-  // The area is (cell - 16) wide and (cell - 60) tall, starting 8 px from the cell top.
-  function drawPiece(ctx, src, x, y, cell) {
+  // The area is (cell - 16) wide and (cell - 16 - stripH) tall (cell - 60 with the normal 44 px strip),
+  // starting 8 px from the cell top, so the piece never touches the strip at the bottom.
+  function drawPiece(ctx, src, x, y, cell, stripH) {
     const s = sizeOf(src);
     if (!s.w || !s.h) return;
     const areaW = Math.max(1, cell - 2 * PAD);
-    const areaH = Math.max(1, cell - 2 * PAD - STRIP_H);
+    const areaH = Math.max(1, cell - 2 * PAD - stripH);
     const k = Math.min(areaW / s.w, areaH / s.h);
     const w = Math.max(1, Math.round(s.w * k));
     const h = Math.max(1, Math.round(s.h * k));
@@ -102,16 +118,35 @@ window.PF = window.PF || {};
     }
   }
 
-  // Draws the number, bold black, centered in the white strip at the bottom of the cell.
-  function drawNumber(ctx, number, x, y, cell) {
+  // Draws the number, bold black, centered across the white strip at the bottom of the cell.
+  // It sits on the first line of the strip: in the middle of a 44 px strip, in the upper part of a 72 px strip.
+  function drawNumber(ctx, number, x, y, cell, stripH) {
     ctx.save();
     ctx.font = 'bold ' + NUMBER_PX + 'px ' + FONT_FAMILY;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'alphabetic';
     ctx.fillStyle = '#000000';
-    const centerY = y + cell - STRIP_H / 2;
+    const centerY = y + cell - stripH + NUMBER_CENTER;
     // Measure all digits so every number sits on the same baseline.
     ctx.fillText(String(number), x + cell / 2, inkBaseline(ctx, '0123456789', centerY));
+    ctx.restore();
+  }
+
+  // Draws the caption (normal 22 px, #333) centered under the number, on the second line of a 72 px strip.
+  // A caption wider than the cell is shrunk (down to 12 px, then squeezed) so it never reaches the next cell.
+  function drawCaption(ctx, text, x, y, cell, stripH) {
+    const maxW = Math.max(1, cell - 2 * PAD);
+    ctx.save();
+    ctx.font = 'normal ' + CAPTION_PX + 'px ' + FONT_FAMILY;
+    const wide = ctx.measureText(text).width;
+    const px = wide > maxW ? Math.max(CAPTION_MIN_PX, Math.floor(CAPTION_PX * maxW / wide)) : CAPTION_PX;
+    ctx.font = 'normal ' + px + 'px ' + FONT_FAMILY;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
+    ctx.fillStyle = CAPTION_COLOR;
+    const centerY = y + cell - stripH + CAPTION_CENTER;
+    // Centre on a capital letter so every caption sits on the same baseline (descenders hang below it).
+    ctx.fillText(text, x + cell / 2, inkBaseline(ctx, 'H', centerY), maxW);
     ctx.restore();
   }
 
@@ -124,20 +159,25 @@ window.PF = window.PF || {};
     ctx.restore();
   }
 
-  // Draws one complete cell: grey background, white number strip, the piece, the number, the border.
-  function drawCell(ctx, src, number, x, y, cell) {
+  // Draws one complete cell: grey background, white strip, the piece, the number, the caption (if any), the border.
+  // stripH is the same for every cell of a sheet (44, or 72 when some entry of the sheet has a caption).
+  function drawCell(ctx, entry, number, x, y, cell, stripH) {
     ctx.fillStyle = CELL_BG;
     ctx.fillRect(x, y, cell, cell);
     ctx.fillStyle = '#ffffff';
-    ctx.fillRect(x, y + cell - STRIP_H, cell, STRIP_H);
-    drawPiece(ctx, src, x, y, cell);
-    drawNumber(ctx, number, x, y, cell);
+    ctx.fillRect(x, y + cell - stripH, cell, stripH);
+    drawPiece(ctx, entry && entry.canvas, x, y, cell, stripH);
+    drawNumber(ctx, number, x, y, cell, stripH);
+    const caption = captionOf(entry);
+    if (caption) drawCaption(ctx, caption, x, y, cell, stripH);
     drawBorder(ctx, x, y, cell);
   }
 
   // Draws one sheet from up to cols*rows entries. The sheet is cropped to the rows it uses.
+  // If any entry of this sheet has a caption, every cell of it gets the tall (72 px) strip.
   function buildSheet(chunk, firstNumber, cols, cell) {
     const usedRows = Math.ceil(chunk.length / cols);
+    const stripH = chunk.some((entry) => captionOf(entry)) ? STRIP_H_CAPTION : STRIP_H;
     const canvas = makeCanvas(cols * cell, usedRows * cell);
     const ctx = getCtx(canvas);
     // Start all white: unused cells in the last row must not be transparent (a JPEG turns those black).
@@ -148,14 +188,16 @@ window.PF = window.PF || {};
       const number = firstNumber + i;
       const x = (i % cols) * cell;
       const y = Math.floor(i / cols) * cell;
-      drawCell(ctx, entry && entry.canvas, number, x, y, cell);
+      drawCell(ctx, entry, number, x, y, cell, stripH);
       placed.push({ number, id: entry ? entry.id : undefined });
     });
     return { canvas, entries: placed };
   }
 
   // Builds numbered contact sheets from piece thumbs. Numbers run on across sheets from startNumber.
-  // entries: [{ id, canvas }]  opts: { cols: 6, rows: 6, cell: 316, startNumber: 1 }
+  // entries: [{ id, canvas, caption? }]  opts: { cols: 6, rows: 6, cell: 316, startNumber: 1 }
+  // caption (optional, e.g. "~3 pieces joined"): when any entry on a sheet has one, the strip under every
+  // piece on that sheet is 72 px tall (number on top, caption under it) instead of 44 px.
   // Returns [{ canvas, entries: [{ number, id }] }].
   function build(entries, opts) {
     const o = opts || {};

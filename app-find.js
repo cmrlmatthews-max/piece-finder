@@ -1,28 +1,41 @@
 window.PF = window.PF || {};
 
-// Find tab: spot photo + poster spot + groups → contact sheets → Claude → ranked results with circles on the group photos.
+// Find tab: traced spot photo + ringed poster spot + groups → contact sheets (singles + clusters) → Claude → ranked results.
 (function () {
   'use strict';
   const A = PF.app;
   const { h, toast, setStatus } = A;
   const state = A.state;
-  const MAX_PIECES = 144;          // 4 sheets of 36
+  const MAX_PIECES = 144;          // singles cap: 4 sheets of 36
+  const MAX_CLUSTERS = 18;         // clusters cap: 2 sheets of 9
 
-  // Loads the loose pieces of the selected groups, each with its group attached. Returns { pieces, truncated }.
+  // Loads the loose pieces of the selected groups, each with its group attached. Returns { singles, clusters, truncated }.
   async function gatherPieces(groups) {
     const sel = state.selectedGroupIds;
-    let pieces = [];
+    let all = [];
     for (const g of groups) {
       if (sel && !sel.has(g.id)) continue;
       const list = (await PF.db.byIndex('pieces', 'groupId', g.id)).filter((p) => p.status !== 'placed');
       list.sort((a, b) => a.createdAt - b.createdAt);
-      pieces = pieces.concat(list.map((p) => ({ piece: p, group: g })));
+      all = all.concat(list.map((p) => ({ piece: p, group: g })));
     }
-    const truncated = pieces.length > MAX_PIECES;
-    return { pieces: pieces.slice(0, MAX_PIECES), truncated };
+    const singles = all.filter((x) => x.piece.kind !== 'cluster');
+    const clusters = all.filter((x) => x.piece.kind === 'cluster');
+    const truncated = singles.length > MAX_PIECES || clusters.length > MAX_CLUSTERS;
+    return { singles: singles.slice(0, MAX_PIECES), clusters: clusters.slice(0, MAX_CLUSTERS), truncated };
   }
 
-  // Runs one search. modelOverride lets "Search again with Sonnet" reuse the same inputs.
+  async function toEntries(list, withCaption) {
+    const out = [];
+    for (const { piece } of list) {
+      const e = { id: piece.id, canvas: await PF.img.blobToCanvas(piece.thumb) };
+      if (withCaption) e.caption = `~${piece.count || 2} pieces joined`;
+      out.push(e);
+    }
+    return out;
+  }
+
+  // Runs one search. modelOverride lets "Search again with …" reuse the same inputs.
   async function runSearch(modelOverride) {
     if (state.busy) return;
     const s = PF.settings.get();
@@ -30,26 +43,29 @@ window.PF = window.PF || {};
     state.busy = true;
     try {
       const groups = (await PF.db.all('groups')).sort((a, b) => a.createdAt - b.createdAt);
-      const { pieces, truncated } = await gatherPieces(groups);
-      if (!pieces.length) throw new Error('No loose pieces in the selected groups.');
+      const { singles, clusters, truncated } = await gatherPieces(groups);
+      const total = singles.length + clusters.length;
+      if (!total) throw new Error('No loose pieces in the selected groups.');
       if (truncated) toast(`Searching the first ${MAX_PIECES} pieces — pick fewer groups for better results`);
-      setStatus(`Building contact sheets for ${pieces.length} pieces…`, true);
-      const entries = [];
-      for (const { piece } of pieces) entries.push({ id: piece.id, canvas: await PF.img.blobToCanvas(piece.thumb) });
-      const sheets = PF.sheet.build(entries, { cols: 6, rows: 6, cell: 316, startNumber: 1 });
-      const sheetBlobs = [];
-      for (const sh of sheets) sheetBlobs.push(await PF.img.canvasToBlob(sh.canvas, 'image/jpeg', 0.85));
-      setStatus(`Asking Claude (${pieces.length} pieces on ${sheets.length} sheet${sheets.length > 1 ? 's' : ''})…`, true);
+      setStatus(`Building contact sheets for ${total} items…`, true);
+      const singleSheets = singles.length ? PF.sheet.build(await toEntries(singles, false), { cols: 6, rows: 6, cell: 316, startNumber: 1 }) : [];
+      const clusterSheets = clusters.length ? PF.sheet.build(await toEntries(clusters, true), { cols: 3, rows: 3, cell: 632, startNumber: singles.length + 1 }) : [];
+      const toBlobs = async (sheets) => { const out = []; for (const sh of sheets) out.push(await PF.img.canvasToBlob(sh.canvas, 'image/jpeg', 0.85)); return out; };
+      const sheetBlobs = await toBlobs(singleSheets);
+      const clusterSheetBlobs = await toBlobs(clusterSheets);
+      const n = singleSheets.length + clusterSheets.length;
+      setStatus(`Asking Claude (${total} items on ${n} sheet${n > 1 ? 's' : ''})…`, true);
       const res = await PF.api.rankPieces({ apiKey: s.apiKey, model, topN: s.topN || 8,
-        holeBlob: state.hole ? state.hole.blob : null, posterBlob: state.spot ? state.spot.cropBlob : null,
-        sheetBlobs, candidateCount: entries.length });
+        holeFullBlob: state.hole ? state.hole.fullBlob : null, holeCropBlob: state.hole ? state.hole.cropBlob : null,
+        posterBlob: state.spot ? state.spot.cropBlob : null,
+        sheetBlobs, clusterSheetBlobs, candidateCount: total });
       const byNumber = {};
-      sheets.forEach((sh) => sh.entries.forEach((e) => { byNumber[e.number] = e.id; }));
+      singleSheets.concat(clusterSheets).forEach((sh) => sh.entries.forEach((e) => { byNumber[e.number] = e.id; }));
       const byId = {};
-      pieces.forEach((x) => { byId[x.piece.id] = x; });
+      singles.concat(clusters).forEach((x) => { byId[x.piece.id] = x; });
       const candidates = res.candidates.map((c) => byId[byNumber[c.number]] ? { ...byId[byNumber[c.number]], confidence: c.confidence, reason: c.reason } : null)
         .filter(Boolean).map((c, i) => ({ ...c, rank: i + 1, hidden: false }));
-      state.results = { model, candidates, notes: res.notes, usage: res.usage, pieceCount: pieces.length, sheetCount: sheets.length };
+      state.results = { model, candidates, spot: res.spot || '', notes: res.notes, usage: res.usage, pieceCount: total, sheetCount: n };
       setStatus('');
       A.render();
     } catch (err) {
@@ -58,6 +74,16 @@ window.PF = window.PF || {};
     } finally {
       state.busy = false;
     }
+  }
+
+  // Opens the tracing picker on a spot photo; stores the marked results in state.hole.
+  async function traceSpot(canvas, initial) {
+    const r = await PF.picker.open({ canvas, mode: 'trace', title: 'Trace the open spot', zoom: 1, initial });
+    if (!r) { if (!state.hole) toast('Trace the open spot to use the photo'); return; }
+    state.hole = { canvas, polygon: r.polygon,
+      fullBlob: await PF.img.canvasToBlob(r.fullCanvas, 'image/jpeg', 0.85),
+      cropBlob: await PF.img.canvasToBlob(r.cropCanvas, 'image/jpeg', 0.9) };
+    A.render();
   }
 
   // --- Find screen -----------------------------------------------------------
@@ -70,34 +96,37 @@ window.PF = window.PF || {};
     const isSel = (g) => !sel || sel.has(g.id);
     const selectedLoose = groups.filter(isSel).reduce((n, g) => n + ((counts[g.id] || {}).loose || 0), 0);
 
-    // 1. spot photo
+    // 1. spot photo, traced
     const takeHole = async () => {
       const file = await A.pickPhoto();
       if (!file) return;
       try {
         setStatus('Preparing the photo…', true);
         const canvas = await A.loadPhoto(file, A.MAX_PHOTO);
-        state.hole = { canvas, blob: await PF.img.canvasToBlob(canvas, 'image/jpeg', 0.85) };
-        A.render();
+        setStatus('');
+        await traceSpot(canvas, null);
       } catch (err) { toast(err.message, 'error'); setStatus(''); }
     };
     const holeCard = h('div', { class: 'card' },
-      h('h2', {}, h('span', { class: 'step' + (state.hole ? ' done' : '') }, '1'), 'Empty spot photo ', h('span', { class: 'muted small' }, '(optional)')),
+      h('h2', {}, h('span', { class: 'step' + (state.hole ? ' done' : '') }, '1'), 'Open spot photo'),
       state.hole
-        ? [h('img', { class: 'preview', src: A.blobUrl(state.hole.blob), alt: 'Empty spot' }),
+        ? [h('img', { class: 'preview', src: A.blobUrl(state.hole.cropBlob), alt: 'Marked open spot' }),
            h('div', { class: 'row', style: { marginTop: '8px' } },
+             h('button', { type: 'button', class: 'btn btn-sm', onclick: () => traceSpot(state.hole.canvas, { polygon: state.hole.polygon }) }, 'Trace again'),
              h('button', { type: 'button', class: 'btn btn-sm', onclick: takeHole }, 'Retake'),
              h('button', { type: 'button', class: 'btn btn-sm btn-ghost', onclick: () => { state.hole = null; A.render(); } }, 'Remove'))]
-        : [h('p', { class: 'muted small' }, 'From above, with the neighbors around the hole in the frame.'),
+        : [h('p', { class: 'muted small' }, 'From above, with the neighbors in the frame. Then trace a loop around the open spot.'),
            h('button', { type: 'button', class: 'btn btn-primary btn-block', onclick: takeHole }, 'Take photo of the spot')]);
 
-    // 2. spot on the poster
+    // 2. spot on the poster, ringed
     const pickSpot = async () => {
       try {
         const posterCanvas = await PF.img.blobToCanvas(poster.blob);
-        const r = await PF.poster.pick({ posterCanvas, initial: state.spot ? { cx: state.spot.cx, cy: state.spot.cy, frac: state.spot.frac } : undefined });
+        const grid = s.gridCols > 0 && s.gridRows > 0 ? { cols: s.gridCols, rows: s.gridRows } : null;
+        const r = await PF.picker.open({ canvas: posterCanvas, mode: 'point', title: 'Put the ring on the spot', zoom: 4, grid,
+          ringFrac: state.spot ? state.spot.ringFrac : 0.025, initial: state.spot ? { cx: state.spot.cx, cy: state.spot.cy } : null });
         if (!r) return;
-        state.spot = { cx: r.cx, cy: r.cy, frac: r.frac, cropCanvas: r.cropCanvas, cropBlob: await PF.img.canvasToBlob(r.cropCanvas, 'image/jpeg', 0.9) };
+        state.spot = { cx: r.cx, cy: r.cy, ringFrac: r.ringFrac, cropBlob: await PF.img.canvasToBlob(r.cropCanvas, 'image/jpeg', 0.9) };
         A.render();
       } catch (err) { toast(err.message, 'error'); }
     };
@@ -134,7 +163,7 @@ window.PF = window.PF || {};
     const canSearch = (state.hole || state.spot) && selectedLoose > 0 && !!s.apiKey && !state.busy;
     const reasons = [];
     if (!s.apiKey) reasons.push('add your API key in Settings');
-    if (!state.hole && !state.spot) reasons.push('add a spot photo or pick the spot');
+    if (!state.hole && !state.spot) reasons.push('add a traced spot photo or pick the spot on the poster');
     if (!selectedLoose) reasons.push('select a group with loose pieces');
 
     return h('div', {},
@@ -168,14 +197,15 @@ window.PF = window.PF || {};
         await PF.db.put('pieces', c.piece);
         c.hidden = true; c.placed = true;
         row.classList.add('leaving');
-        toast('Piece placed. It is out of the pool now.', 'ok');
+        toast('Placed. It is out of the pool now.', 'ok');
         setTimeout(() => A.render(), 260);
       };
       row.append(
         h('span', { class: 'rank' }, String(c.rank)),
         h('img', { class: 'thumb', src: A.blobUrl(c.piece.thumb), alt: '' }),
         h('div', { class: 'grow' },
-          h('div', { class: 'row' }, h('span', { class: 'title' }, c.group.name), h('span', { class: 'pill ' + c.confidence }, c.confidence)),
+          h('div', { class: 'row' }, h('span', { class: 'title' }, c.group.name), h('span', { class: 'pill ' + c.confidence }, c.confidence),
+            c.piece.kind === 'cluster' ? h('span', { class: 'pill cluster' }, `cluster ~${c.piece.count || 2}`) : null),
           h('div', { class: 'reason' }, c.reason || ''),
           h('div', { class: 'row' },
             h('button', { type: 'button', class: 'btn btn-sm btn-primary', onclick: placed }, 'Placed ✓'),
@@ -200,19 +230,21 @@ window.PF = window.PF || {};
     }
 
     const usage = r.usage ? `Tokens: ${A.fmtInt(r.usage.input_tokens)} in · ${A.fmtInt(r.usage.output_tokens)} out` : '';
+    const nextModel = r.model === 'claude-haiku-5-5' ? 'claude-sonnet-5-5' : (r.model === 'claude-sonnet-5-5' ? 'claude-opus-5-5' : null);
+    const nextLabel = nextModel ? (PF.api.MODELS.find((m) => m.id === nextModel) || {}).label : '';
     return h('div', {},
       h('button', { type: 'button', class: 'link', onclick: () => { state.results = null; A.render(); } }, '← New search'),
       h('h1', {}, 'Top candidates'),
-      h('p', { class: 'muted small' }, `${modelLabel} · ${r.pieceCount} pieces on ${r.sheetCount} sheet${r.sheetCount > 1 ? 's' : ''}`),
+      h('p', { class: 'muted small' }, `${modelLabel} · ${r.pieceCount} items on ${r.sheetCount} sheet${r.sheetCount > 1 ? 's' : ''}`),
+      r.spot ? h('div', { class: 'card' }, h('h2', {}, 'What Claude saw at the spot'), h('p', { class: 'small' }, r.spot),
+        h('p', { class: 'muted small' }, 'If this is wrong, trace the spot again or retake the photo closer.')) : null,
       rows.length ? rows : h('div', { class: 'card' }, h('p', {}, visible.length === 0 && r.candidates.length ? 'No candidates left.' : 'Claude found no plausible piece in these groups.'),
         h('p', { class: 'muted small' }, 'Try other groups, a clearer spot photo, or a smarter model.')),
       groupSections,
       r.notes ? h('p', { class: 'muted small' }, 'Note: ' + r.notes) : null,
       usage ? h('p', { class: 'muted small' }, usage) : null,
       h('div', { id: 'status', class: 'status' }),
-      r.model === 'claude-haiku-5-5'
-        ? h('button', { type: 'button', class: 'btn btn-block', disabled: state.busy, onclick: () => runSearch('claude-sonnet-5-5') }, 'Search again with Sonnet 5.5')
-        : null);
+      nextModel ? h('button', { type: 'button', class: 'btn btn-block', disabled: state.busy, onclick: () => runSearch(nextModel) }, 'Search again with ' + nextLabel.split(' — ')[0]) : null);
   }
 
   A.views.find = function () {
