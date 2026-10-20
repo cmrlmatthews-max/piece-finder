@@ -5,7 +5,7 @@ window.PF = window.PF || {};
 PF.app = (function () {
   'use strict';
 
-  const VERSION = 'v0.2';
+  const VERSION = 'v0.3';
   const MAX_PHOTO = 1600;     // long edge for group photos and spot photos
   const MAX_POSTER = 2400;    // long edge for the stored poster
 
