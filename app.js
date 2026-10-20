@@ -211,6 +211,13 @@ PF.app = (function () {
     document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => setTab(b.dataset.tab)));
     try { await PF.db.open(); await PF.db.requestPersist(); }
     catch (err) { toast('Storage is not available: ' + err.message, 'error'); }
+    // one-time move from the v0.1 default (Haiku) to the v0.2 default (Sonnet); a later manual choice is kept
+    try {
+      if (localStorage.getItem('pf.v') !== '2') {
+        if (PF.settings.get().model === 'claude-haiku-5-5') PF.settings.set({ model: 'claude-sonnet-5-5' });
+        localStorage.setItem('pf.v', '2');
+      }
+    } catch (err) { /* storage blocked: keep going */ }
     if (!PF.settings.get().apiKey) state.tab = 'settings';
     render();
   }

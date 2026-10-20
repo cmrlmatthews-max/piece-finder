@@ -170,7 +170,41 @@ window.T = (function () {
     return out;
   }
 
-  return { rng, canvas, pieceLayer, stamp, makePiece, solid, px, inkBox, count, png, shrink, stripStack };
+  // Cuts the same rectangle out of several cells of a (possibly shrunk) sheet, enlarges each cut-out `grow` times
+  // and stacks them in one tall picture, so OCR has something to read.
+  // cells: [[col, row], ...]   rect: { x, y, w, h } in FULL-SIZE cell coordinates (y counted from the top of the cell)
+  // scale: how much the sheet was shrunk (1 = not at all)
+  function cellStack(sheet, cells, cell, scale, grow, rect) {
+    const sw = Math.round(rect.w * scale), sh = Math.round(rect.h * scale);
+    const gap = 14, pad = 20;
+    const out = canvas((sw + 2 * pad) * grow, (cells.length * (sh + gap) + pad) * grow);
+    const g = out.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, out.width, out.height);
+    g.imageSmoothingEnabled = true;
+    g.imageSmoothingQuality = 'high';
+    cells.forEach(([c, r], n) => {
+      const sx = Math.round((c * cell + rect.x) * scale), sy = Math.round((r * cell + rect.y) * scale);
+      g.drawImage(sheet, sx, sy, sw, sh, pad * grow, (pad + n * (sh + gap)) * grow, sw * grow, sh * grow);
+    });
+    return out;
+  }
+
+  // Draws `text` in the given CSS font, in `color`, on white, and returns how many pixels are clearly inked
+  // (average channel < 200). Used as a reference for "this caption looks like normal 22 px text".
+  function inkCount(text, font, color) {
+    const c = canvas(400, 60);
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff';
+    g.fillRect(0, 0, 400, 60);
+    g.font = font;
+    g.fillStyle = color;
+    g.textAlign = 'center';
+    g.fillText(text, 200.3, 40);
+    return count(c, { x: 0, y: 0, w: 400, h: 60 }, (r, gg, b) => (r + gg + b) / 3 < 200);
+  }
+
+  return { rng, canvas, pieceLayer, stamp, makePiece, solid, px, inkBox, count, png, shrink, stripStack, cellStack, inkCount };
 })();
 </script>
 </body>

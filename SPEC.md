@@ -1,5 +1,12 @@
 # Piece Finder — build spec
 
+> **v0.2 changes (2026-10-20), not yet folded into the sections below:** `poster.js` is replaced by `picker.js`
+> (`PF.picker.open({canvas, mode:'trace'|'point', …})` — trace a loop around the open spot on the spot photo, or pan the
+> poster under a fixed ring). Pieces have `kind: 'single'|'cluster'` and `count`. `PF.api.rankPieces` takes
+> `holeFullBlob`, `holeCropBlob`, `posterBlob`, `sheetBlobs`, `clusterSheetBlobs`; the schema is `spot, candidates, notes`;
+> the default model is `claude-sonnet-5-5`; settings gain `gridCols`/`gridRows`. `PF.sheet.build` entries accept a
+> `caption`. See `NOTES-v02.md` and the code.
+
 A phone web app (iPhone Home Screen, GitHub Pages, no build step) that helps two people finish a 1500-piece jigsaw puzzle.
 The user photographs small sorted groups of loose pieces from above. The app cuts each photo into pieces on the phone.
 To fill one empty spot, the user photographs the spot and/or taps the spot on the poster (full picture). The app sends the
