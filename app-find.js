@@ -57,6 +57,7 @@ window.PF = window.PF || {};
       setStatus(`Asking Claude (${total} items on ${n} sheet${n > 1 ? 's' : ''})…`, true);
       const res = await PF.api.rankPieces({ apiKey: s.apiKey, model, topN: s.topN || 8,
         holeFullBlob: state.hole ? state.hole.fullBlob : null, holeCropBlob: state.hole ? state.hole.cropBlob : null,
+        sides: state.hole ? state.hole.sides : null,
         posterBlob: state.spot ? state.spot.cropBlob : null,
         sheetBlobs, clusterSheetBlobs, candidateCount: total });
       const byNumber = {};
@@ -80,10 +81,15 @@ window.PF = window.PF || {};
   async function traceSpot(canvas, initial) {
     const r = await PF.picker.open({ canvas, mode: 'trace', title: 'Trace the open spot', zoom: 1, initial });
     if (!r) { if (!state.hole) toast('Trace the open spot to use the photo'); return; }
-    state.hole = { canvas, polygon: r.polygon,
+    state.hole = { canvas, polygon: r.polygon, seed: r.seed, tol: r.tol, snapped: r.snapped, sides: r.sides,
       fullBlob: await PF.img.canvasToBlob(r.fullCanvas, 'image/jpeg', 0.85),
       cropBlob: await PF.img.canvasToBlob(r.cropCanvas, 'image/jpeg', 0.9) };
     A.render();
+  }
+  function sidesSummary(sides) {
+    if (!sides) return '';
+    const names = (v) => ['top', 'right', 'bottom', 'left'].filter((s) => sides[s] === v).join(', ') || 'none';
+    return `Neighbors: ${names('pieces')} · Open: ${names('open')}`;
   }
 
   // --- Find screen -----------------------------------------------------------
@@ -111,11 +117,13 @@ window.PF = window.PF || {};
       h('h2', {}, h('span', { class: 'step' + (state.hole ? ' done' : '') }, '1'), 'Open spot photo'),
       state.hole
         ? [h('img', { class: 'preview', src: A.blobUrl(state.hole.cropBlob), alt: 'Marked open spot' }),
+           h('p', { class: 'muted small', style: { marginTop: '6px' } }, (state.hole.snapped ? 'Edge snapped. ' : 'Your loop as drawn. ') + sidesSummary(state.hole.sides)),
            h('div', { class: 'row', style: { marginTop: '8px' } },
-             h('button', { type: 'button', class: 'btn btn-sm', onclick: () => traceSpot(state.hole.canvas, { polygon: state.hole.polygon }) }, 'Trace again'),
+             h('button', { type: 'button', class: 'btn btn-sm', onclick: () => traceSpot(state.hole.canvas,
+               { polygon: state.hole.polygon, seed: state.hole.seed, tol: state.hole.tol, snapped: state.hole.snapped, sides: state.hole.sides }) }, 'Trace again'),
              h('button', { type: 'button', class: 'btn btn-sm', onclick: takeHole }, 'Retake'),
              h('button', { type: 'button', class: 'btn btn-sm btn-ghost', onclick: () => { state.hole = null; A.render(); } }, 'Remove'))]
-        : [h('p', { class: 'muted small' }, 'From above, with the neighbors in the frame. Then trace a loop around the open spot.'),
+        : [h('p', { class: 'muted small' }, 'From above, with the neighbors in the frame; the table or mat must show through the hole. Then draw a loose loop around the open spot and the app finds its exact edge.'),
            h('button', { type: 'button', class: 'btn btn-primary btn-block', onclick: takeHole }, 'Take photo of the spot')]);
 
     // 2. spot on the poster, ringed

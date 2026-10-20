@@ -24,7 +24,7 @@ window.PF = window.PF || {};
     'and a marked open spot and say which pieces might fit. Be concrete and brief.';
 
   const HOLE_FULL_TEXT = 'IMAGE: photo of the puzzle around the open spot to fill, taken from above. ' +
-    'The yellow outline marks the open spot. Pieces that touch the outline from outside are placed neighbors. ' +
+    'The yellow outline follows the edge of the open spot. Pieces that touch the outline from outside are placed neighbors. ' +
     'Some sides of the outline may have no neighbor because the puzzle is unfinished there; those sides are free.';
 
   const HOLE_CROP_TEXT = 'IMAGE: zoomed view of the same marked spot.';
@@ -169,9 +169,21 @@ window.PF = window.PF || {};
   // Builds the content blocks in the required order, each image preceded by its own text:
   // full spot photo, zoomed spot photo, poster crop, single-piece sheets, cluster sheets, final task text.
   // Pictures that are missing are left out.
+  // Adds the side information when the app knows it: { top, right, bottom, left: 'pieces' | 'open' }.
+  function sidesText(sides) {
+    if (!sides || typeof sides !== 'object') return '';
+    const pieces = [], open = [];
+    for (const s of ['top', 'right', 'bottom', 'left']) {
+      if (sides[s] === 'open') open.push(s); else if (sides[s] === 'pieces') pieces.push(s);
+    }
+    if (!pieces.length && !open.length) return '';
+    return ' Sides of the spot with placed neighbors: ' + (pieces.length ? pieces.join(', ') : 'none') + '.' +
+      ' Open sides (no neighbor yet, no constraint): ' + (open.length ? open.join(', ') : 'none') + '.';
+  }
+
   async function buildContent(p, singles, clusters, topN, count) {
     const blocks = [];
-    if (p.holeFullBlob) blocks.push(textBlock(HOLE_FULL_TEXT), await imageBlock(p.holeFullBlob));
+    if (p.holeFullBlob) blocks.push(textBlock(HOLE_FULL_TEXT + sidesText(p.sides)), await imageBlock(p.holeFullBlob));
     if (p.holeCropBlob) blocks.push(textBlock(HOLE_CROP_TEXT), await imageBlock(p.holeCropBlob));
     if (p.posterBlob) blocks.push(textBlock(POSTER_TEXT), await imageBlock(p.posterBlob));
     for (let i = 0; i < singles.length; i++) {

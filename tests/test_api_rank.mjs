@@ -73,7 +73,7 @@ const ENDPOINT = 'https://api.anthropic.com/v1/messages';
 const EM = '—';
 const LIT = {
   system: 'You help people solve a 1500-piece jigsaw puzzle. You look at photos of loose pieces and a marked open spot and say which pieces might fit. Be concrete and brief.',
-  holeFull: 'IMAGE: photo of the puzzle around the open spot to fill, taken from above. The yellow outline marks the open spot. Pieces that touch the outline from outside are placed neighbors. Some sides of the outline may have no neighbor because the puzzle is unfinished there; those sides are free.',
+  holeFull: 'IMAGE: photo of the puzzle around the open spot to fill, taken from above. The yellow outline follows the edge of the open spot. Pieces that touch the outline from outside are placed neighbors. Some sides of the outline may have no neighbor because the puzzle is unfinished there; those sides are free.',
   holeCrop: 'IMAGE: zoomed view of the same marked spot.',
   poster: 'IMAGE: crop of the finished-puzzle picture (the poster) around the spot. The yellow ring marks where the missing piece goes.',
   sheet: (i, n) => `CANDIDATE SHEET ${i} of ${n}: loose single pieces. The number under each piece is its ID.`,

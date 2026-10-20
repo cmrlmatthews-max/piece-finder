@@ -137,12 +137,18 @@ Photo of the spot:
 
 1. Open the **Find** tab.
 2. Tap **Take photo of the spot**.
-3. Photograph the open spot with its neighbors in the frame.
-4. The trace screen opens. Drag your finger in a loop around the open spot.
-5. To pan or zoom first, tap **Move**. Then tap **Draw** to trace.
-6. Tap **Done**.
+3. Photograph the open spot with its neighbors in the frame. The table or mat must show through the hole.
+4. The trace screen opens. Drag your finger in a loose loop around the open spot. Keep the loop outside the hole edge.
+5. The app finds the exact edge of the hole inside your loop and draws it in yellow. Your loop shows as a dashed line.
+6. Check the four side buttons. **Pieces** means a neighbor touches that side. **Open** means no neighbor yet. Tap a button to change it.
+7. If the yellow edge is wrong, move the **Tolerance** slider, or tap once inside the hole to move the seed point.
+8. If the edge cannot be found, tap **Snap** to turn it off. The app then uses your loop as drawn.
+9. To pan or zoom, tap **Move**. Tap **Draw** to trace again.
+10. Tap **Done**.
 
-The app draws a yellow outline on the photo. Claude uses the outline to find the spot. Sides of the outline with no neighbor are free sides.
+Seed point: the spot where the app starts to look for the table color. The red dot shows it.
+
+Claude gets the photo with the yellow edge, a zoomed crop, and the list of bounded and open sides.
 
 Spot on the poster:
 

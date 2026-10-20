@@ -143,8 +143,10 @@ try {
   await doneBtn.click();
   await page.waitForTimeout(1200);
   check('trace picker closed', await page.locator('.pk-overlay').count() === 0);
-  const hole = await page.evaluate(() => PF.app.state.hole && { pts: PF.app.state.hole.polygon.length, full: PF.app.state.hole.fullBlob.size, crop: PF.app.state.hole.cropBlob.size });
+  const hole = await page.evaluate(() => PF.app.state.hole && { pts: PF.app.state.hole.polygon.length, full: PF.app.state.hole.fullBlob.size, crop: PF.app.state.hole.cropBlob.size, snapped: PF.app.state.hole.snapped, sides: PF.app.state.hole.sides });
   check('hole stored with polygon, full and crop blobs', hole && hole.pts >= 8 && hole.full > 1000 && hole.crop > 1000, JSON.stringify(hole));
+  check('edge snapped to the hole', hole && hole.snapped === true);
+  check('sides: top+left pieces, right+bottom open', hole && hole.sides && hole.sides.top === 'pieces' && hole.sides.left === 'pieces' && hole.sides.right === 'open' && hole.sides.bottom === 'open', JSON.stringify(hole && hole.sides));
 
   // Find: poster ring
   await page.getByRole('button', { name: /pick the spot/i }).click();
@@ -169,6 +171,7 @@ try {
   const texts = blocks.filter((b) => b.type === 'text').map((b) => b.text);
   check('request has full + crop + poster + 2 single sheets + 1 cluster sheet', images.length === 6, `images=${images.length}, blocks=${blocks.length}`);
   check('cluster sheet text present', texts.some((t) => /CLUSTER SHEET 1 of 1/.test(t)));
+  check('hole text names the bounded and open sides', texts.some((t) => /placed neighbors: top, left\./.test(t) && /Open sides \(no neighbor yet, no constraint\): right, bottom\./.test(t)), (texts[0] || '').slice(-140));
   check('schema puts spot before candidates', JSON.stringify(Object.keys(call.body.output_config.format.schema.properties)) === '["spot","candidates","notes"]');
   check('headers include browser-access and version', call && call.headers['anthropic-dangerous-direct-browser-access'] === 'true' && call.headers['anthropic-version'] === '2023-06-01');
   const resultsText = await page.locator('body').innerText();
